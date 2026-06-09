@@ -1,0 +1,9 @@
+# 文本文件自动归一化行尾（仓库内 LF）
+* text=auto eol=lf
+
+# 二进制资源，禁止任何转换
+*.ico binary
+*.syso binary
+*.png binary
+*.jpg binary
+*.zip binary
