@@ -345,28 +345,110 @@ type modelLimitEntry struct {
 	limit  int64
 }
 
-// 注意：这些是经验默认值。不同后端/版本可能不同，可在 ~/.claude-monitor.json 里覆盖。
+// 模型上下文窗口上限表（前缀匹配，第一条命中即返回）。
+// 数据来源：各厂商官方文档（2025-2026），具体值可能随后端/版本变化，
+// 可在 ~/.claude-monitor.json 的 modelLimits 字段覆盖。
 var builtinModelLimits = []modelLimitEntry{
+	// ---- Anthropic Claude ----
+	// 注意：4.5+ 扩展到 1M；基础 4.x 为 200K
+	{"claude-opus-4-8", 1000000},
+	{"claude-opus-4-7", 1000000},
+	{"claude-opus-4-6", 1000000},
 	{"claude-opus-4", 200000},
+	{"claude-sonnet-4-6", 1000000},
+	{"claude-sonnet-4-5", 1000000},
 	{"claude-sonnet-4", 200000},
 	{"claude-haiku-4", 200000},
 	{"claude-3-5-sonnet", 200000},
 	{"claude-3-5-haiku", 200000},
 	{"claude-3-opus", 200000},
 	{"claude-3-sonnet", 200000},
-	{"glm-5", 200000},
-	{"glm-4.6", 128000},
-	{"glm-4.5", 128000},
-	{"glm-4-", 128000},
-	{"glm-4", 128000},
-	{"gpt-4.1", 1047576},
+	{"claude-3-haiku", 200000},
+
+	// ---- OpenAI ----
+	{"o4-mini", 200000},
+	{"o3-mini", 200000},
+	{"o3", 200000},
+	{"o1-mini", 128000},
+	{"o1", 200000},
+	{"gpt-4.1-mini", 1048576},
+	{"gpt-4.1-nano", 1048576},
+	{"gpt-4.1", 1048576},
+	{"gpt-4.5", 128000},
+	{"gpt-4o-mini", 128000},
 	{"gpt-4o", 128000},
-	{"gpt-5", 400000},
-	{"deepseek", 128000},
+
+	// ---- Google Gemini ----
+	{"gemini-2.5-flash-lite", 1048576},
+	{"gemini-2.5-flash", 1048576},
+	{"gemini-2.5-pro", 1048576},
+	{"gemini-2.0-flash-lite", 1048576},
+	{"gemini-2.0-flash", 1048576},
+	{"gemini-1.5-flash", 1048576},
+	{"gemini-1.5-pro", 2097152},
+
+	// ---- DeepSeek ----
+	{"deepseek-v4", 1048576},
+	{"deepseek_v4", 1048576},
+	{"deepseek-r1", 131072},
+	{"deepseek-v3", 131072},
+	{"deepseek_v3", 131072},
+	{"deepseek-v2", 131072},
+	{"deepseek_v2", 131072},
+	{"deepseek", 131072},
+
+	// ---- 通义千问 Qwen ----
+	{"qwen-long", 10000000},
+	{"qwen-turbo", 1048576},
+	{"qwen-plus", 1048576},
+	{"qwen-max", 131072},
+	{"qwen3-coder", 262144},
+	{"qwen3-next", 262144},
+	{"qwen3-max", 131072},
+	{"qwen3-", 131072}, // qwen3-8b/14b/32b/72b via YaRN
+	{"qwen2.5-", 131072},
 	{"qwen", 131072},
-	{"k2", 256000},
-	{"gemini-2", 2000000},
-	{"gemini-1.5", 2000000},
+
+	// ---- 智谱 GLM ----
+	{"glm-5", 200000},
+	{"glm-4.5-air", 131072},
+	{"glm-4.5", 200000},
+	{"glm-4-", 131072},
+	{"glm-4", 131072},
+
+	// ---- 月之暗面 Kimi ----
+	{"kimi-k2-5", 262144},
+	{"kimi-k2", 131072},
+	{"moonshot-v1", 131072},
+
+	// ---- 百度文心 ----
+	{"ernie-5", 131072},
+	{"ernie-4-5", 131072},
+	{"ernie-4.5", 131072},
+
+	// ---- 字节豆包 Doubao ----
+	{"doubao-seed-1-6", 262144},
+	{"doubao", 131072},
+
+	// ---- Meta Llama ----
+	{"llama-4-scout", 10485760},
+	{"llama-4-maverick", 1048576},
+	{"llama-4-", 1048576},
+	{"llama-3-", 131072},
+	{"llama-3", 8192},
+
+	// ---- Mistral ----
+	{"mistral-large", 262144},
+	{"mistral-medium", 131072},
+	{"mistral-small", 131072},
+	{"mistral-nemo", 131072},
+	{"codestral", 262144},
+	{"pixtral", 131072},
+
+	// ---- Cohere ----
+	{"command-a", 262144},
+	{"command-r-plus", 131072},
+	{"command-r", 131072},
 }
 
 func modelContextLimit(model string) int64 {
