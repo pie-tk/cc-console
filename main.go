@@ -164,6 +164,9 @@ func runGUI() error {
 		return err
 	}
 
+	// 右键表格行：清空 / 输入对话 / 回溯（向对应实例的控制台注入按键）
+	setupRowMenu(tv, model, mainWin, footLabel)
+
 	// ---- 系统托盘 ----
 	ni, err := walk.NewNotifyIcon(mainWin)
 	if err != nil {
@@ -234,6 +237,7 @@ func runGUI() error {
 		statusLabel.SetText(head)
 		footLabel.SetText(fmt.Sprintf("每 1 秒刷新    更新于 %s", now.Format("15:04:05")))
 		model.PublishRowsReset()
+		_ = tv.Invalidate() // LVM_SETITEMCOUNT 带 LVSICF_NOINVALIDATEALL，行数不变时不重绘，需手动刷新
 
 		_ = ni.SetToolTip(fmt.Sprintf("Claude Code 实例监控\n在线 %d（●忙碌 %d · ○空闲 %d）", len(live), busy, idle))
 	}
