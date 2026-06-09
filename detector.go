@@ -451,20 +451,79 @@ var builtinModelLimits = []modelLimitEntry{
 	{"command-r", 131072},
 }
 
+// modelContextLimit 解析模型字符串的上下文上限。
+//
+// 优先顺序：
+//  1. 模型字符串里显式带的上限信息（格式：<model>[<limit>]，如 "deepseek-v4-pro[1M]" / "glm-5[256k]"）
+//  2. ~/.claude-monitor.json 里的精确模型映射
+//  3. 内置表的前缀匹配
+//  4. 默认 200000
 func modelContextLimit(model string) int64 {
 	if model == "" {
 		return 0
 	}
 	ml := strings.ToLower(model)
+
+	// 1) 显式 [xxx] 后缀：支持 K/M/G 缩写（200k = 200*1000，2m = 2*1000*1000）
+	base, explicit, hasExplicit := splitModelAndLimit(ml)
+	if hasExplicit {
+		if v, ok := parseLimitToken(explicit); ok {
+			return v
+		}
+		// 解析失败就忽略括号，继续走下面的匹配
+	}
+	// 解析失败或没括号时，用原串继续
+	if base != "" {
+		ml = base
+	}
+
+	// 2) 配置精确覆盖
 	if v, ok := configLimits[ml]; ok {
 		return v
 	}
+	// 3) 内置表前缀匹配
 	for _, e := range builtinModelLimits {
 		if strings.HasPrefix(ml, e.prefix) {
 			return e.limit
 		}
 	}
-	return 0
+	// 4) 默认 200K
+	return 200000
+}
+
+// splitModelAndLimit 拆 "model[limit]"；返回 (base, limit, true) 或 (原串, "", false)
+func splitModelAndLimit(s string) (string, string, bool) {
+	i := strings.LastIndex(s, "[")
+	j := strings.LastIndex(s, "]")
+	if i >= 0 && j > i {
+		return s[:i], strings.ToLower(s[i+1 : j]), true
+	}
+	return s, "", false
+}
+
+// parseLimitToken 解析 "200k" / "2m" / "1g" / 纯数字 → tokens
+func parseLimitToken(t string) (int64, bool) {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return 0, false
+	}
+	mult := int64(1)
+	switch t[len(t)-1] {
+	case 'k':
+		mult = 1000
+		t = t[:len(t)-1]
+	case 'm':
+		mult = 1000000
+		t = t[:len(t)-1]
+	case 'g':
+		mult = 1000000000
+		t = t[:len(t)-1]
+	}
+	n, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n * mult, true
 }
 
 // loadConfig 读取 ~/.claude-monitor.json，支持 {"modelLimits":{"glm-5.1":200000}} 覆盖默认上限。
