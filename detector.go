@@ -526,23 +526,69 @@ func parseLimitToken(t string) (int64, bool) {
 	return n * mult, true
 }
 
-// loadConfig 读取 ~/.claude-monitor.json，支持 {"modelLimits":{"glm-5.1":200000}} 覆盖默认上限。
+// loadConfig 读取上下文上限配置，优先级：
+//  1. ~/.claude-monitor.json 的 modelLimits（精确覆盖）
+//  2. ~/.claude/settings.json 里模型环境变量中的 [xxx] 标注
+//     如 ANTHROPIC_MODEL="deepseek-v4-pro[1M]" → 自动识别为 1,000,000
 func loadConfig() {
 	configLimits = map[string]int64{}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return
 	}
+
+	// ~/.claude-monitor.json 手动覆盖
 	data, err := os.ReadFile(filepath.Join(home, ".claude-monitor.json"))
+	if err == nil {
+		var cfg struct {
+			ModelLimits map[string]int64 `json:"modelLimits"`
+		}
+		if json.Unmarshal(data, &cfg) == nil {
+			for k, v := range cfg.ModelLimits {
+				configLimits[strings.ToLower(k)] = v
+			}
+		}
+	}
+
+	// ~/.claude/settings.json 里的模型环境变量
+	loadSettingsContextLimits(home)
+}
+
+// loadSettingsContextLimits 从 Claude Code 的 settings.json 中读取模型环境变量，
+// 解析其中的 [xxx] 上下文标注，注入到 configLimits。
+func loadSettingsContextLimits(home string) {
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
 		return
 	}
 	var cfg struct {
-		ModelLimits map[string]int64 `json:"modelLimits"`
+		Env map[string]string `json:"env"`
 	}
-	if json.Unmarshal(data, &cfg) == nil {
-		for k, v := range cfg.ModelLimits {
-			configLimits[strings.ToLower(k)] = v
+	if json.Unmarshal(data, &cfg) != nil || len(cfg.Env) == 0 {
+		return
+	}
+	// 检查这些模型相关的环境变量
+	modelKeys := []string{
+		"ANTHROPIC_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+	}
+	for _, key := range modelKeys {
+		val := cfg.Env[key]
+		if val == "" {
+			continue
+		}
+		base, explicit, hasExplicit := splitModelAndLimit(strings.ToLower(val))
+		if !hasExplicit {
+			continue
+		}
+		if v, ok := parseLimitToken(explicit); ok {
+			// "deepseek-v4-pro[1M]" → configLimits["deepseek-v4-pro"] = 1000000
+			configLimits[base] = v
 		}
 	}
 }
