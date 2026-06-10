@@ -1,4 +1,4 @@
-package main
+package monitor
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 
 // ---- 展示辅助函数（CLI + GUI 共用） ----
 
-func statusRank(s string) int {
+func StatusRank(s string) int {
 	switch s {
 	case "busy":
 		return 0
@@ -18,7 +18,7 @@ func statusRank(s string) int {
 	return 2
 }
 
-func countStatus(insts []Instance, s string) int {
+func CountStatus(insts []Instance, s string) int {
 	c := 0
 	for _, it := range insts {
 		if it.Status == s {
@@ -28,7 +28,7 @@ func countStatus(insts []Instance, s string) int {
 	return c
 }
 
-func totalContext(insts []Instance) int64 {
+func TotalContext(insts []Instance) int64 {
 	var t int64
 	for _, it := range insts {
 		t += it.ContextTokens
@@ -36,7 +36,7 @@ func totalContext(insts []Instance) int64 {
 	return t
 }
 
-func statusText(s string) string {
+func StatusText(s string) string {
 	switch s {
 	case "busy":
 		return "● 忙碌"
@@ -48,7 +48,7 @@ func statusText(s string) string {
 	return "? " + s
 }
 
-func modelDisplay(it Instance) string {
+func ModelDisplay(it Instance) string {
 	if !it.HasConversation {
 		return "（新）"
 	}
@@ -58,7 +58,7 @@ func modelDisplay(it Instance) string {
 	return it.Model
 }
 
-func topicDisplay(it Instance) string {
+func TopicDisplay(it Instance) string {
 	if !it.HasConversation {
 		return "（新会话·无消息）"
 	}
@@ -68,17 +68,16 @@ func topicDisplay(it Instance) string {
 	return it.Topic
 }
 
-func outputDisplay(it Instance) string {
+func OutputDisplay(it Instance) string {
 	if !it.HasConversation {
 		return "（新）"
 	}
-	return formatTokens(it.OutputTokens)
+	return FormatTokens(it.OutputTokens)
 }
 
-// contextDisplay: 用于 GUI 表格的 Context 列。
+// ContextDisplay: 用于 GUI 表格的 Context 列。
 // 已知上限时渲染 Unicode 进度条：「━━━━━━━─── 74% · 148k/200k」
-// 颜色由 styleCellFunc.contextCellColor 决定。
-func contextDisplay(it Instance) string {
+func ContextDisplay(it Instance) string {
 	if !it.HasConversation {
 		return "（新会话）"
 	}
@@ -88,13 +87,13 @@ func contextDisplay(it Instance) string {
 	if it.ContextLimit > 0 {
 		pct := it.ContextTokens * 100 / it.ContextLimit
 		return fmt.Sprintf("%s  %d%% · %s/%s",
-			unicodeBar(int(pct), 10), pct, compactK(it.ContextTokens), compactK(it.ContextLimit))
+			UnicodeBar(int(pct), 10), pct, CompactK(it.ContextTokens), CompactK(it.ContextLimit))
 	}
-	return compactK(it.ContextTokens)
+	return CompactK(it.ContextTokens)
 }
 
-// contextDisplayPlain 是 --list 模式用的纯文本版本（不带进度条字符，避免对齐错位）。
-func contextDisplayPlain(it Instance) string {
+// ContextDisplayPlain 是 --list 模式用的纯文本版本（不带进度条字符，避免对齐错位）。
+func ContextDisplayPlain(it Instance) string {
 	if !it.HasConversation {
 		return "（新）"
 	}
@@ -103,14 +102,14 @@ func contextDisplayPlain(it Instance) string {
 	}
 	if it.ContextLimit > 0 {
 		pct := it.ContextTokens * 100 / it.ContextLimit
-		return fmt.Sprintf("%d%%  %s/%s", pct, compactK(it.ContextTokens), compactK(it.ContextLimit))
+		return fmt.Sprintf("%d%%  %s/%s", pct, CompactK(it.ContextTokens), CompactK(it.ContextLimit))
 	}
-	return compactK(it.ContextTokens)
+	return CompactK(it.ContextTokens)
 }
 
-// unicodeBar 渲染 width 格进度条：已用 ━（U+2501 BOX DRAWINGS HEAVY HORIZONTAL），
+// UnicodeBar 渲染 width 格进度条：已用 ━（U+2501 BOX DRAWINGS HEAVY HORIZONTAL），
 // 未用 ─（U+2500 BOX DRAWINGS LIGHT HORIZONTAL）。两者宽度一致，对齐稳定。
-func unicodeBar(pct, width int) string {
+func UnicodeBar(pct, width int) string {
 	if pct < 0 {
 		pct = 0
 	}
@@ -134,8 +133,8 @@ func unicodeBar(pct, width int) string {
 
 // ---- 格式化工具 ----
 
-// compactK 整数缩写：1k / 148k / 1M
-func compactK(n int64) string {
+// CompactK 整数缩写：1k / 148k / 1M
+func CompactK(n int64) string {
 	switch {
 	case n >= 1000000:
 		return fmt.Sprintf("%dM", n/1000000)
@@ -145,8 +144,8 @@ func compactK(n int64) string {
 	return fmt.Sprintf("%d", n)
 }
 
-// formatTokens 带小数缩写：1.2k / 1.5M / 10.0M。0 或负数返回 "—"。
-func formatTokens(n int64) string {
+// FormatTokens 带小数缩写：1.2k / 1.5M / 10.0M。0 或负数返回 "—"。
+func FormatTokens(n int64) string {
 	if n <= 0 {
 		return "—"
 	}
@@ -159,8 +158,8 @@ func formatTokens(n int64) string {
 	return fmt.Sprintf("%d", n)
 }
 
-// formatTokensCompact 带小数缩写，但 0 返回 "0"（用于 stats 行，"—" 语义不对）。
-func formatTokensCompact(n int64) string {
+// FormatTokensCompact 带小数缩写，但 0 返回 "0"（用于 stats 行，"—" 语义不对）。
+func FormatTokensCompact(n int64) string {
 	if n <= 0 {
 		return "0"
 	}
@@ -173,7 +172,7 @@ func formatTokensCompact(n int64) string {
 	return fmt.Sprintf("%d", n)
 }
 
-func truncateRunes(s string, n int) string {
+func TruncateRunes(s string, n int) string {
 	s = strings.TrimSpace(s)
 	r := []rune(s)
 	if len(r) <= n {
@@ -182,7 +181,7 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-func humanDuration(fromMs int64, now time.Time) string {
+func HumanDuration(fromMs int64, now time.Time) string {
 	if fromMs <= 0 {
 		return "—"
 	}
@@ -203,15 +202,15 @@ func humanDuration(fromMs int64, now time.Time) string {
 	}
 }
 
-func abs(x int64) int64 {
+func abs64(x int64) int64 {
 	if x < 0 {
 		return -x
 	}
 	return x
 }
 
-// joinWithDot 用圆点分隔符连接字符串切片。
-func joinWithDot(parts []string) string {
+// JoinWithDot 用圆点分隔符连接字符串切片。
+func JoinWithDot(parts []string) string {
 	out := ""
 	for i, p := range parts {
 		if i > 0 {

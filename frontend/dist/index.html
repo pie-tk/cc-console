@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="/style.css">
+  <title>Claude Code 监控</title>
+  <script type="module" crossorigin src="/assets/index-BI0CEBoG.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部 Hero -->
+    <header id="hero">
+      <div class="title-row">
+        <span class="hero-emoji">📊</span>
+        <h1 class="hero-title">Claude Code 监控</h1>
+      </div>
+      <p class="subtitle">实时监控本机运行中的所有 Claude Code 实例</p>
+      <div class="spacer-8"></div>
+      <div class="stats-row">
+        <span id="stats" class="stats-text">正在检测...</span>
+        <span class="flex-spacer"></span>
+        <span id="clock" class="clock"></span>
+      </div>
+    </header>
+
+    <!-- 卡片列表 -->
+    <div id="cards-container">
+      <div id="cards"></div>
+      <div id="empty-state" class="hidden">
+        <div class="empty-icon">🌙</div>
+        <div class="empty-title">当前没有运行中的 Claude Code 实例</div>
+        <div class="empty-hint">启动一个 Claude Code 会话后，它会自动出现在这里</div>
+      </div>
+    </div>
+
+    <!-- 分割线 -->
+    <div id="divider"></div>
+
+    <!-- 底部 Footer -->
+    <footer id="footer">
+      <span id="foot-msg" class="foot-msg">正在初始化...</span>
+      <span class="flex-spacer"></span>
+      <span id="foot-hint" class="foot-hint">💡  卡片右侧：清空 · 对话 · 回溯 · 窗口</span>
+    </footer>
+  </div>
+
+  <!-- Prompt 对话框 (modal) -->
+  <div id="prompt-overlay" class="modal-overlay hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <span class="modal-emoji">✏️</span>
+        <span class="modal-title">发送对话到该实例</span>
+      </div>
+      <div class="modal-subtitle">输入文字后点击 发送 ⏎ 或按 Ctrl+Enter。多行会被折叠为空格。</div>
+      <textarea id="prompt-input" class="modal-textarea" placeholder="输入消息..." rows="5"></textarea>
+      <div class="modal-buttons">
+        <button id="prompt-cancel" class="btn btn-cancel" onclick="hidePromptModal()">取消</button>
+        <button id="prompt-send" class="btn btn-send" onclick="sendPrompt()">发送  ⏎</button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

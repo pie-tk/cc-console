@@ -1,4 +1,4 @@
-package main
+package monitor
 
 import (
 	"encoding/json"
@@ -123,14 +123,14 @@ var builtinModelLimits = []modelLimitEntry{
 	{"command-r", 131072},
 }
 
-// modelContextLimit 解析模型字符串的上下文上限。
+// ModelContextLimit 解析模型字符串的上下文上限。
 //
 // 优先顺序：
 //  1. 模型字符串里显式带的上限信息（格式：<model>[<limit>]，如 "deepseek-v4-pro[1M]" / "glm-5[256k]"）
 //  2. ~/.claude-monitor.json 里的精确模型映射
 //  3. 内置表的前缀匹配
 //  4. 默认 200000
-func modelContextLimit(model string) int64 {
+func ModelContextLimit(model string) int64 {
 	if model == "" {
 		return 0
 	}
@@ -198,11 +198,11 @@ func parseLimitToken(t string) (int64, bool) {
 	return n * mult, true
 }
 
-// loadConfig 读取上下文上限配置，优先级：
+// LoadConfig 读取上下文上限配置，优先级：
 //  1. ~/.claude-monitor.json 的 modelLimits（精确覆盖）
 //  2. ~/.claude/settings.json 里模型环境变量中的 [xxx] 标注
 //     如 ANTHROPIC_MODEL="deepseek-v4-pro[1M]" → 自动识别为 1,000,000
-func loadConfig() {
+func LoadConfig() {
 	configLimits = map[string]int64{}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

@@ -1,19 +1,48 @@
-package main
+//go:build windows
+
+package monitor
 
 import (
 	"fmt"
+	"syscall"
 	"unicode/utf16"
 	"unsafe"
 
-	"github.com/lxn/win"
 	"golang.org/x/sys/windows"
 )
 
-// 这一组常量 / 结构体对应 Win32 控制台输入记录。golang.org/x/sys/windows 没有导出
-// AttachConsole / FreeConsole / WriteConsoleInput 和 INPUT_RECORD，所以这里按字节布局
-// 自己定义，并通过 kernel32 的 LazyProc 调用。
+func init() {
+	Injector = &windowsInjector{}
+}
+
+type windowsInjector struct{}
+
+// ---- Win32 DLL 声明 ----
+
+var (
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+
+	procAttachConsole     = kernel32.NewProc("AttachConsole")
+	procFreeConsole       = kernel32.NewProc("FreeConsole")
+	procWriteConsoleInput = kernel32.NewProc("WriteConsoleInputW")
+	procGetConsoleWindow  = kernel32.NewProc("GetConsoleWindow")
+
+	user32DLL = syscall.NewLazyDLL("user32.dll")
+
+	procGetAncestor       = user32DLL.NewProc("GetAncestor")
+	procShowWindow        = user32DLL.NewProc("ShowWindow")
+	procSetForegroundWindow = user32DLL.NewProc("SetForegroundWindow")
+)
+
+// ---- Win32 控制台输入记录常量/结构 ----
 
 const eventTypeKey = 0x0001 // INPUT_RECORD::EventType == KEY_EVENT
+
+const (
+	vkReturn  = 0x0D
+	vkEscape  = 0x1B
+	swRestore = 9 // SW_RESTORE
+)
 
 // keyEventRecord 严格对应 Win32 KEY_EVENT_RECORD（16 字节，无填充）。
 type keyEventRecord struct {
@@ -54,7 +83,6 @@ func boolToInt32(b bool) int32 {
 }
 
 // textRecords 把字符串拆成「逐字符 按下+抬起」的输入记录（按 UTF-16 码元）。
-// vk 留 0、只设 uChar——Claude Code（Node）读控制台 KEY_EVENT 时以 uChar 为准。
 func textRecords(text string) []inputRecord {
 	units := utf16.Encode([]rune(text))
 	recs := make([]inputRecord, 0, len(units)*2)
@@ -68,8 +96,8 @@ func textRecords(text string) []inputRecord {
 // withEnter 末尾追加一个回车（VK_RETURN），用于提交输入。
 func withEnter(recs []inputRecord) []inputRecord {
 	return append(recs,
-		makeKeyRecord(true, win.VK_RETURN, '\r'),
-		makeKeyRecord(false, win.VK_RETURN, '\r'),
+		makeKeyRecord(true, vkReturn, '\r'),
+		makeKeyRecord(false, vkReturn, '\r'),
 	)
 }
 
@@ -78,23 +106,15 @@ func escapeRecords() []inputRecord {
 	var recs []inputRecord
 	for i := 0; i < 2; i++ {
 		recs = append(recs,
-			makeKeyRecord(true, win.VK_ESCAPE, 0x1B),
-			makeKeyRecord(false, win.VK_ESCAPE, 0x1B),
+			makeKeyRecord(true, vkEscape, 0x1B),
+			makeKeyRecord(false, vkEscape, 0x1B),
 		)
 	}
 	return recs
 }
 
-// SendInputRecords 把按键记录投递到指定进程所附属控制台的输入缓冲区。
-//
-// 原理：监控程序自身无控制台（-H windowsgui 构建），因此可以 AttachConsole(pid)
-// 临时挂到目标 Claude Code 的控制台上，取其 STD_INPUT_HANDLE，用 WriteConsoleInput
-// 投递 KEY_EVENT，再 FreeConsole 退出。这些按键对 Claude Code 而言与用户在终端里亲手
-// 敲入完全等价——/clear、/rewind、普通提问都走同一条 stdin。
-//
-// 限制：目标进程必须「真正附在某个控制台上」（即在普通终端窗口里运行）。
-// 若它由管道/重定向启动（没有控制台），AttachConsole 会失败。
-func SendInputRecords(pid uint32, recs []inputRecord) error {
+// sendInputRecords 把按键记录投递到指定进程所附属控制台的输入缓冲区。
+func sendInputRecords(pid uint32, recs []inputRecord) error {
 	if len(recs) == 0 {
 		return nil
 	}
@@ -123,5 +143,45 @@ func SendInputRecords(pid uint32, recs []inputRecord) error {
 	if r == 0 {
 		return fmt.Errorf("WriteConsoleInput 失败: %v", e)
 	}
+	return nil
+}
+
+// ---- ConsoleInput 接口实现 ----
+
+func (w *windowsInjector) SendClear(pid int) error {
+	return sendInputRecords(uint32(pid), withEnter(textRecords("/clear")))
+}
+
+func (w *windowsInjector) SendRewind(pid int) error {
+	return sendInputRecords(uint32(pid), escapeRecords())
+}
+
+func (w *windowsInjector) SendPrompt(pid int, text string) error {
+	return sendInputRecords(uint32(pid), withEnter(textRecords(text)))
+}
+
+func (w *windowsInjector) ShowWindow(pid int) error {
+	_, _, _ = procFreeConsole.Call()
+
+	r, _, _ := procAttachConsole.Call(uintptr(pid))
+	if r == 0 {
+		return fmt.Errorf("无法找到窗口（PID %d）\n请确认它在普通终端窗口里运行", pid)
+	}
+	defer func() { _, _, _ = procFreeConsole.Call() }()
+
+	r, _, _ = procGetConsoleWindow.Call()
+	hwnd := uintptr(r)
+	if hwnd == 0 {
+		return fmt.Errorf("未找到控制台窗口（PID %d）", pid)
+	}
+
+	// 向上取根属主窗口（兼容 conpty / Windows Terminal）
+	if ro, _, _ := procGetAncestor.Call(hwnd, 3); ro != 0 {
+		hwnd = ro
+	}
+
+	procShowWindow.Call(hwnd, uintptr(swRestore))
+	procSetForegroundWindow.Call(hwnd)
+
 	return nil
 }

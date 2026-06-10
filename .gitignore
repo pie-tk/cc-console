@@ -20,6 +20,9 @@ rsrc*.exe
 *.swp
 *.swo
 
+# 前端依赖
+frontend/node_modules/
+
 # 操作系统
 Thumbs.db
 desktop.ini

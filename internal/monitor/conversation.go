@@ -1,4 +1,4 @@
-package main
+package monitor
 
 import (
 	"bytes"
@@ -113,7 +113,7 @@ func parseConversation(data []byte, d *convDetails) {
 	}
 
 	if d.topic == "" && firstUser != "" {
-		d.topic = truncateRunes(firstUser, 60)
+		d.topic = TruncateRunes(firstUser, 60)
 	}
 }
 

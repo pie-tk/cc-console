@@ -1,0 +1,28 @@
+version: '3'
+
+vars:
+  APP_NAME: "claude-monitor"
+  BIN_DIR: "bin"
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+
+tasks:
+  build:
+    summary: Builds the application
+    cmds:
+      - cd frontend && npm run build
+      - go build -ldflags="-H windowsgui -s -w" -o {{.APP_NAME}}.exe .
+
+  dev:
+    summary: Runs the application in development mode
+    cmds:
+      - go run github.com/wailsapp/wails/v3/cmd/wails3@latest dev -port {{.VITE_PORT}}
+
+  generate:
+    summary: Generate bindings
+    cmds:
+      - go run github.com/wailsapp/wails/v3/cmd/wails3@latest generate bindings
+
+  cli:
+    summary: Build CLI-only version (no GUI)
+    cmds:
+      - go build -ldflags="-s -w" -o {{.APP_NAME}}-cli.exe .
