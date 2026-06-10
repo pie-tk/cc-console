@@ -3,142 +3,95 @@ package main
 import (
 	"fmt"
 	"strings"
-	"syscall"
-	"unsafe"
 
 	"github.com/lxn/walk"
 	d "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
-	"golang.org/x/sys/windows"
 )
 
-// 右键菜单项命令 ID。
-const (
-	cmdClear  = 1
-	cmdPrompt = 2
-	cmdRewind = 3
-)
-
-// 子类化与各动作共享的句柄。setupRowMenu 在主窗口创建后赋值。
+// 全局句柄（卡片操作 / 错误提示 / 反馈消息要用到）。
 var (
-	gModel      *InstanceModel
-	gTV         *walk.TableView
-	gMW         *walk.MainWindow
-	gFoot       *walk.Label
-	origTVProc  uintptr
+	gMW   *walk.MainWindow
+	gFoot *walk.Label
 )
-
-// setupRowMenu 给表格挂上右键菜单：清空 / 输入对话 / 回溯。
-//
-// Walk 的 TableView 行其实是两个未注册的 SysListView32 子窗口画的，
-// SetContextMenu / tv.MouseDown 都收不到行上的右键。这里改用子类化表格窗口，
-// 拦截 WM_NOTIFY 里的 NM_RCLICK（行的右键通知会发给父表格），命中行后弹出菜单。
-func setupRowMenu(tv *walk.TableView, model *InstanceModel, mw *walk.MainWindow, foot *walk.Label) {
-	gModel, gTV, gMW, gFoot = model, tv, mw, foot
-
-	cb := syscall.NewCallback(tvSubclassProc)
-	origTVProc = win.SetWindowLongPtr(tv.Handle(), win.GWLP_WNDPROC, cb)
-}
-
-func tvSubclassProc(hwnd win.HWND, msg uint32, wp, lp uintptr) uintptr {
-	ret := win.CallWindowProc(origTVProc, hwnd, msg, wp, lp)
-	if msg == win.WM_NOTIFY {
-		nmh := (*win.NMHDR)(unsafe.Pointer(lp))
-		if nmh != nil && nmh.Code == win.NM_RCLICK {
-			showRowMenu()
-		}
-	}
-	return ret
-}
-
-func showRowMenu() {
-	if gTV == nil || gModel == nil {
-		return
-	}
-
-	var cpt win.POINT
-	win.GetCursorPos(&cpt) // 屏幕坐标（菜单定位用）
-	client := cpt
-	win.ScreenToClient(gTV.Handle(), &client)
-
-	idx := gTV.IndexAt(int(client.X), int(client.Y))
-	if idx < 0 || idx >= len(gModel.items) {
-		return // 点在表头 / 空白：不弹菜单
-	}
-	_ = gTV.SetCurrentIndex(idx) // 高亮选中该行，让用户看清操作对象
-
-	menu := win.CreatePopupMenu()
-	if menu == 0 {
-		return
-	}
-	defer win.DestroyMenu(menu)
-
-	appendMenu(menu, win.MF_STRING, cmdClear, "清空会话    /clear")
-	appendMenu(menu, win.MF_STRING, cmdPrompt, "输入对话…")
-	appendMenu(menu, win.MF_STRING, cmdRewind, "回溯    (ESC ESC)")
-
-	chosen := win.TrackPopupMenuEx(
-		menu,
-		win.TPM_RETURNCMD|win.TPM_LEFTALIGN|win.TPM_TOPALIGN|win.TPM_RIGHTBUTTON,
-		cpt.X, cpt.Y,
-		gMW.Handle(), nil,
-	)
-
-	switch chosen {
-	case cmdClear:
-		actClear(gModel.items[idx])
-	case cmdPrompt:
-		actPrompt(gModel.items[idx])
-	case cmdRewind:
-		actRewind(gModel.items[idx])
-	}
-}
-
-func appendMenu(menu win.HMENU, flags uint32, id uintptr, text string) {
-	var lp uintptr
-	if text != "" {
-		if w, err := windows.UTF16PtrFromString(text); err == nil {
-			lp = uintptr(unsafe.Pointer(w))
-		}
-	}
-	_, _, _ = procAppendMenuW.Call(uintptr(menu), uintptr(flags), id, lp)
-}
 
 // ---- 三个动作 ----
 
-func actClear(it Instance) {
-	if err := SendInputRecords(uint32(it.Pid), withEnter(textRecords("/clear"))); err != nil {
-		msgBoxErr(fmt.Sprintf("清空失败（PID %d）", it.Pid), err)
+func actClear(pid int) {
+	result := walk.MsgBox(gMW,
+		"确认清空会话",
+		fmt.Sprintf("确定要清空 PID %d 的会话吗？\n此操作将清除当前对话内容。", pid),
+		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion|walk.MsgBoxDefButton2)
+	if result != walk.DlgCmdYes {
 		return
 	}
-	flashFoot(fmt.Sprintf("已向 PID %d 发送 /clear", it.Pid))
-}
-
-func actRewind(it Instance) {
-	if err := SendInputRecords(uint32(it.Pid), escapeRecords()); err != nil {
-		msgBoxErr(fmt.Sprintf("回溯失败（PID %d）", it.Pid), err)
+	if err := SendInputRecords(uint32(pid), withEnter(textRecords("/clear"))); err != nil {
+		msgBoxErr(fmt.Sprintf("清空失败（PID %d）", pid), err)
 		return
 	}
-	flashFoot(fmt.Sprintf("已向 PID %d 发送 ESC×2（回溯）", it.Pid))
+	flashFoot(fmt.Sprintf("✓  已向 PID %d 发送 /clear", pid))
 }
 
-func actPrompt(it Instance) {
+func actRewind(pid int) {
+	if err := SendInputRecords(uint32(pid), escapeRecords()); err != nil {
+		msgBoxErr(fmt.Sprintf("回溯失败（PID %d）", pid), err)
+		return
+	}
+	flashFoot(fmt.Sprintf("↺  已向 PID %d 发送 ESC×2（回溯）", pid))
+}
+
+func actPrompt(pid int) {
 	text, ok := runPromptDialog()
 	if !ok || strings.TrimSpace(text) == "" {
 		return
 	}
-	// 多行折叠为单行：换行在 TUI 里会触发提交；末尾再补一个回车。
 	flat := strings.ReplaceAll(text, "\r\n", " ")
 	flat = strings.ReplaceAll(flat, "\n", " ")
-	if err := SendInputRecords(uint32(it.Pid), withEnter(textRecords(flat))); err != nil {
-		msgBoxErr(fmt.Sprintf("发送失败（PID %d）", it.Pid), err)
+	if err := SendInputRecords(uint32(pid), withEnter(textRecords(flat))); err != nil {
+		msgBoxErr(fmt.Sprintf("发送失败（PID %d）", pid), err)
 		return
 	}
-	flashFoot(fmt.Sprintf("已向 PID %d 发送：%s", it.Pid, truncateForFoot(flat)))
+	flashFoot(fmt.Sprintf("✓  已向 PID %d 发送：%s", pid, truncateForFoot(flat)))
+}
+
+// actShowWin 找到目标实例所在的终端窗口并把它提到最前面。
+//
+// 原理：AttachConsole(pid) → GetConsoleWindow() → GetAncestor(GA_ROOTOWNER)
+// 向上取到真正可见的顶层窗口（兼容传统 conhost 和 Windows Terminal / conpty），
+// 再用 ShowWindow + SetForegroundWindow 置前。
+func actShowWin(pid int) {
+	_, _, _ = procFreeConsole.Call()
+
+	r, _, _ := procAttachConsole.Call(uintptr(pid))
+	if r == 0 {
+		msgBoxErr(fmt.Sprintf("无法找到窗口（PID %d）", pid),
+			fmt.Errorf("无法附加到该实例的控制台\n请确认它在普通终端窗口里运行"))
+		return
+	}
+	defer func() { _, _, _ = procFreeConsole.Call() }()
+
+	r, _, _ = procGetConsoleWindow.Call()
+	hwnd := win.HWND(r)
+	if hwnd == 0 {
+		msgBoxErr(fmt.Sprintf("无法找到窗口（PID %d）", pid),
+			fmt.Errorf("未找到控制台窗口"))
+		return
+	}
+
+	// 向上取根属主窗口（兼容 conpty / Windows Terminal）
+	if ro, _, _ := procGetAncestor.Call(uintptr(hwnd), 3); ro != 0 {
+		hwnd = win.HWND(ro)
+	}
+
+	win.ShowWindow(hwnd, win.SW_RESTORE)
+	win.SetForegroundWindow(hwnd)
+
+	flashFoot(fmt.Sprintf("🪟  已将 PID %d 的窗口置前", pid))
 }
 
 // ---- 输入对话框 ----
-
+//
+// Notion 风格：标题区暖白底 + 副标 + 大留白；按钮区柔和分隔。
 func runPromptDialog() (string, bool) {
 	var (
 		dlg       *walk.Dialog
@@ -146,32 +99,103 @@ func runPromptDialog() (string, bool) {
 		okBtn     *walk.PushButton
 		cancelBtn *walk.PushButton
 		accept    bool
-		result    string // 关闭前就读取，Close 后窗口可能已销毁
+		result    string
 	)
 
+	bgWindow := theme.WindowBG
+	bgPanel := theme.PanelBG
+
 	builder := d.Dialog{
-		AssignTo: &dlg,
-		Title:    "向 Claude Code 实例发送对话",
-		Size:     d.Size{Width: 520, Height: 280},
-		MinSize:  d.Size{Width: 360, Height: 200},
-		Layout:   d.VBox{Margins: d.Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
+		AssignTo:   &dlg,
+		Title:      "发送对话",
+		Size:       d.Size{Width: 580, Height: 340},
+		MinSize:    d.Size{Width: 460, Height: 260},
+		Font:       d.Font{Family: "Segoe UI Variable", PointSize: 9},
+		Background: d.SolidColorBrush{Color: bgWindow},
+		Layout:     d.VBox{MarginsZero: true, Spacing: 0},
 		Children: []d.Widget{
-			d.Label{Text: "输入要发送到该实例的文本（确定后自动追加回车提交）。建议单行；换行会被转为空格。"},
-			d.TextEdit{AssignTo: &te, VScroll: true, MinSize: d.Size{Height: 120}},
+			// 标题区
 			d.Composite{
-				Layout: d.HBox{MarginsZero: true},
+				Background: d.SolidColorBrush{Color: bgPanel},
+				Layout: d.VBox{
+					Margins: d.Margins{Left: 28, Top: 22, Right: 28, Bottom: 18},
+					Spacing: 6,
+				},
+				Children: []d.Widget{
+					d.Composite{
+						Background: d.SolidColorBrush{Color: bgPanel},
+						Layout:     d.HBox{MarginsZero: true, Spacing: 10},
+						Children: []d.Widget{
+							d.Label{
+								Text:       "✏️",
+								Background: d.SolidColorBrush{Color: bgPanel},
+								Font:       d.Font{Family: "Segoe UI Emoji", PointSize: 14},
+							},
+							d.Label{
+								Text:       "发送对话到该实例",
+								TextColor:  theme.WindowText,
+								Background: d.SolidColorBrush{Color: bgPanel},
+								Font:       d.Font{Family: "Segoe UI Variable", PointSize: 13, Bold: true},
+							},
+						},
+					},
+					d.Label{
+						Text:       "输入文字后点击 发送 ⏎ 或按 Enter。多行会被折叠为空格。",
+						TextColor:  theme.SecondaryText,
+						Background: d.SolidColorBrush{Color: bgPanel},
+						Font:       d.Font{Family: "Segoe UI Variable", PointSize: 9},
+					},
+				},
+			},
+			// 柔和分隔线
+			d.Composite{
+				MinSize:    d.Size{Height: 1},
+				MaxSize:    d.Size{Height: 1},
+				Background: d.SolidColorBrush{Color: theme.Divider},
+				Layout:     d.HBox{MarginsZero: true},
+			},
+			// 输入区
+			d.Composite{
+				Background: d.SolidColorBrush{Color: bgWindow},
+				Layout: d.VBox{
+					Margins: d.Margins{Left: 28, Top: 18, Right: 28, Bottom: 0},
+					Spacing: 8,
+				},
+				Children: []d.Widget{
+					d.TextEdit{
+						AssignTo: &te,
+						VScroll:  true,
+						MinSize:  d.Size{Height: 130},
+					},
+				},
+			},
+			// 按钮区
+			d.Composite{
+				Background: d.SolidColorBrush{Color: bgWindow},
+				Layout: d.HBox{
+					Margins: d.Margins{Left: 28, Top: 14, Right: 28, Bottom: 18},
+					Spacing: 8,
+				},
 				Children: []d.Widget{
 					d.HSpacer{},
-					d.PushButton{AssignTo: &okBtn, Text: "确定",
+					d.PushButton{
+						AssignTo:  &cancelBtn,
+						Text:      "取消",
+						MinSize:   d.Size{Width: 96, Height: 34},
+						OnClicked: func() { dlg.Close(walk.DlgCmdCancel) },
+					},
+					d.PushButton{
+						AssignTo: &okBtn,
+						Text:     "发送  ⏎",
+						MinSize:  d.Size{Width: 120, Height: 34},
 						OnClicked: func() {
 							if te != nil {
 								result = te.Text()
 							}
 							accept = true
 							dlg.Close(walk.DlgCmdOK)
-						}},
-					d.PushButton{AssignTo: &cancelBtn, Text: "取消",
-						OnClicked: func() { dlg.Close(walk.DlgCmdCancel) }},
+						},
+					},
 				},
 			},
 		},
@@ -182,7 +206,16 @@ func runPromptDialog() (string, bool) {
 	if err := builder.Create(gMW); err != nil {
 		return "", false
 	}
-	dlg.Run() // 阻塞，直到点 确定/取消 或按 Esc
+
+	enableDarkTitleBar(dlg.Handle())
+	if isDark && te != nil {
+		te.SetTextColor(theme.WindowText)
+		if bg, err := walk.NewSolidColorBrush(theme.CardBG); err == nil {
+			te.SetBackground(bg)
+		}
+	}
+
+	dlg.Run()
 	if !accept {
 		return "", false
 	}
@@ -191,9 +224,12 @@ func runPromptDialog() (string, bool) {
 
 // ---- 反馈 ----
 
+// flashFoot 在底部状态条短暂显示一条消息（带 TTL，自动淡出）。
 func flashFoot(s string) {
+	setFootMessage(s)
 	if gFoot != nil {
 		_ = gFoot.SetText(s)
+		gFoot.SetTextColor(theme.WindowText)
 	}
 }
 

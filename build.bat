@@ -1,9 +1,11 @@
 @echo off
-REM 构建 Windows GUI 版本（无控制台窗口、剥离调试信息）
-REM 需要先安装 Go 1.26+：https://go.dev/dl/
+REM Build Windows GUI binary (no console window, stripped debug info)
+REM Requires Go 1.26+: https://go.dev/dl/
 go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
 if errorlevel 1 (
-    echo 构建失败
+    echo.
+    echo BUILD FAILED
+    pause
     exit /b 1
 )
-echo 构建成功: claude-monitor.exe
+echo BUILD OK: claude-monitor.exe

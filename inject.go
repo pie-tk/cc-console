@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"syscall"
 	"unicode/utf16"
 	"unsafe"
 
@@ -13,16 +12,6 @@ import (
 // 这一组常量 / 结构体对应 Win32 控制台输入记录。golang.org/x/sys/windows 没有导出
 // AttachConsole / FreeConsole / WriteConsoleInput 和 INPUT_RECORD，所以这里按字节布局
 // 自己定义，并通过 kernel32 的 LazyProc 调用。
-
-var (
-	kernel32              = syscall.NewLazyDLL("kernel32.dll")
-	procAttachConsole     = kernel32.NewProc("AttachConsole")
-	procFreeConsole       = kernel32.NewProc("FreeConsole")
-	procWriteConsoleInput = kernel32.NewProc("WriteConsoleInputW")
-
-	user32          = syscall.NewLazyDLL("user32.dll")
-	procAppendMenuW = user32.NewProc("AppendMenuW")
-)
 
 const eventTypeKey = 0x0001 // INPUT_RECORD::EventType == KEY_EVENT
 
