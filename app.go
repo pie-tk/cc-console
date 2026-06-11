@@ -22,6 +22,7 @@ func runWailsApp() {
 	app := application.New(application.Options{
 		Name:        "Claude Code 监控",
 		Description: "实时监控本机运行中的所有 Claude Code 实例",
+		Icon:        trayIconBytes,
 		Services: []application.Service{
 			application.NewService(svc),
 		},
@@ -58,7 +59,7 @@ func runWailsApp() {
 
 	// ---- 系统托盘 ----
 	tray := app.SystemTray.New()
-	tray.SetIcon(iconBytes)
+	tray.SetIcon(trayIconBytes)
 	tray.SetTooltip("Claude Code 监控")
 
 	menu := app.NewMenu()
@@ -72,8 +73,12 @@ func runWailsApp() {
 	})
 	tray.SetMenu(menu)
 
-	// ---- 关闭窗口 → 隐藏到托盘 ----
+	// ---- 关闭窗口：根据设置决定隐藏到托盘还是直接退出 ----
 	win.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		if monitor.IsCloseQuit() {
+			app.Quit()
+			return
+		}
 		win.Hide()
 		event.Cancel()
 	})

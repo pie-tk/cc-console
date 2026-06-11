@@ -10,6 +10,9 @@ const ID_ACT_CLEAR   = 2684523210;
 const ID_ACT_REWIND  = 765506358;
 const ID_ACT_PROMPT  = 3578199235;
 const ID_ACT_SHOW    = 3029513688;
+const ID_GET_SETTINGS  = 4111710580;
+const ID_SAVE_SETTINGS = 2821561663;
+const ID_OPEN_URL      = 2662437060;
 
 // ---- State ----
 let currentPids = [];
@@ -352,8 +355,65 @@ window.sendPrompt = async function() {
 };
 
 document.addEventListener("keydown", function(e) {
-  var overlay = document.getElementById("prompt-overlay");
-  if (overlay.classList.contains("hidden")) return;
+  var promptOverlay = document.getElementById("prompt-overlay");
+  var settingsOverlay = document.getElementById("settings-overlay");
+
+  if (!settingsOverlay.classList.contains("hidden") && e.key === "Escape") {
+    hideSettings();
+    return;
+  }
+
+  if (promptOverlay.classList.contains("hidden")) return;
   if (e.ctrlKey && e.key === "Enter") { sendPrompt(); }
   if (e.key === "Escape") { hidePromptModal(); }
 });
+
+// ---- Settings ----
+window.showSettings = async function() {
+  try {
+    var s = await Call.ByID(ID_GET_SETTINGS);
+    document.getElementById("toggle-close-quits").checked = s.closeQuits;
+    document.getElementById("toggle-auto-start").checked = s.autoStart;
+    document.getElementById("about-version").textContent = "版本 " + (s.version || "--");
+  } catch (e) {
+    flashFoot("加载设置失败: " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("settings-overlay").classList.remove("hidden");
+  window.switchSettingsCat("general");
+};
+
+window.hideSettings = function() {
+  document.getElementById("settings-overlay").classList.add("hidden");
+};
+
+window.switchSettingsCat = function(cat) {
+  var items = document.querySelectorAll(".settings-nav-item");
+  for (var i = 0; i < items.length; i++) {
+    items[i].classList.toggle("active", items[i].dataset.cat === cat);
+  }
+  document.getElementById("settings-general").classList.toggle("hidden", cat !== "general");
+  document.getElementById("settings-system").classList.toggle("hidden", cat !== "system");
+  document.getElementById("settings-about").classList.toggle("hidden", cat !== "about");
+};
+
+window.saveSetting = async function(key, val) {
+  var closeQuits = document.getElementById("toggle-close-quits").checked;
+  var autoStart = document.getElementById("toggle-auto-start").checked;
+  try {
+    await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart);
+    var label = key === "closeQuits" ? "关闭按钮行为" : "开机启动";
+    flashFoot("✓  " + label + "已保存");
+  } catch (e) {
+    var el = document.getElementById(key === "closeQuits" ? "toggle-close-quits" : "toggle-auto-start");
+    el.checked = !val;
+    flashFoot("保存失败: " + (e && e.message ? e.message : e));
+  }
+};
+
+window.openSettingsGithub = async function() {
+  try {
+    await Call.ByID(ID_OPEN_URL, "https://github.com/pie-tk/claude-code-monitor");
+  } catch (e) {
+    flashFoot("打开失败: " + (e && e.message ? e.message : e));
+  }
+};

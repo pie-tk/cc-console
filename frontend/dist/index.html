@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="/style.css">
   <title>Claude Code 监控</title>
-  <script type="module" crossorigin src="/assets/index-BI0CEBoG.js"></script>
+  <script type="module" crossorigin src="/assets/index-DAXTeddb.js"></script>
 </head>
 <body>
   <div id="app">
@@ -21,6 +21,7 @@
         <span id="stats" class="stats-text">正在检测...</span>
         <span class="flex-spacer"></span>
         <span id="clock" class="clock"></span>
+        <button id="settings-btn" class="settings-btn" title="设置" onclick="showSettings()">&#x2699;</button>
       </div>
     </header>
 
@@ -58,6 +59,60 @@
         <button id="prompt-cancel" class="btn btn-cancel" onclick="hidePromptModal()">取消</button>
         <button id="prompt-send" class="btn btn-send" onclick="sendPrompt()">发送  ⏎</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="settings-overlay" class="modal-overlay hidden" onclick="if(event.target===this) hideSettings()">
+    <div class="settings-dialog">
+      <div class="settings-layout">
+        <nav class="settings-sidebar">
+          <div class="settings-nav-item active" data-cat="general" onclick="switchSettingsCat('general')">常规设置</div>
+          <div class="settings-nav-item" data-cat="system" onclick="switchSettingsCat('system')">系统设置</div>
+          <div class="settings-nav-item" data-cat="about" onclick="switchSettingsCat('about')">关于</div>
+        </nav>
+        <div class="settings-panel">
+          <div id="settings-general" class="settings-section">
+            <div class="settings-title">常规设置</div>
+            <div class="settings-item">
+              <div class="settings-item-text">
+                <span class="settings-label">关闭按钮直接退出</span>
+                <span class="settings-desc">开启后，点击关闭按钮将直接退出程序，而不是最小化到系统托盘</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-close-quits" onchange="saveSetting('closeQuits', this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div id="settings-system" class="settings-section hidden">
+            <div class="settings-title">系统设置</div>
+            <div class="settings-item">
+              <div class="settings-item-text">
+                <span class="settings-label">开机启动</span>
+                <span class="settings-desc">开启后，系统启动时自动运行此程序</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-auto-start" onchange="saveSetting('autoStart', this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div id="settings-about" class="settings-section hidden">
+            <div class="settings-title">关于</div>
+            <div class="about-content">
+              <p class="about-name">Claude Code 监控</p>
+              <p id="about-version" class="about-version">版本 --</p>
+              <button class="about-link" onclick="window.openSettingsGithub()">GitHub</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <button class="settings-close-btn" onclick="hideSettings()" title="关闭">&#x2715;</button>
     </div>
   </div>
 

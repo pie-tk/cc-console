@@ -12,6 +12,9 @@ import (
 //go:embed icon.ico
 var iconBytes []byte
 
+//go:embed trayicon.png
+var trayIconBytes []byte
+
 func main() {
 	monitor.LoadConfig()
 

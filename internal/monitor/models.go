@@ -12,6 +12,10 @@ import (
 
 var configLimits = map[string]int64{}
 
+// configModel 保存 settings.json 中 ANTHROPIC_MODEL 的模型名（去掉 [xxx] 后缀），
+// 作为新会话（JSONL 还没有 assistant 消息时）的 fallback 模型名。
+var configModel string
+
 type modelLimitEntry struct {
 	prefix string
 	limit  int64
@@ -198,28 +202,21 @@ func parseLimitToken(t string) (int64, bool) {
 	return n * mult, true
 }
 
-// LoadConfig 读取上下文上限配置，优先级：
-//  1. ~/.claude-monitor.json 的 modelLimits（精确覆盖）
+// LoadConfig 读取应用设置 + 模型上限覆盖，优先级：
+//  1. ~/.claude-monitor.json 的 modelLimits（精确覆盖，同时加载 closeQuits/autoStart）
 //  2. ~/.claude/settings.json 里模型环境变量中的 [xxx] 标注
-//     如 ANTHROPIC_MODEL="deepseek-v4-pro[1M]" → 自动识别为 1,000,000
 func LoadConfig() {
+	_ = LoadSettings()
+
+	configModel = ""
 	configLimits = map[string]int64{}
+	for k, v := range currentSettings.ModelLimits {
+		configLimits[strings.ToLower(k)] = v
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return
-	}
-
-	// ~/.claude-monitor.json 手动覆盖
-	data, err := os.ReadFile(filepath.Join(home, ".claude-monitor.json"))
-	if err == nil {
-		var cfg struct {
-			ModelLimits map[string]int64 `json:"modelLimits"`
-		}
-		if json.Unmarshal(data, &cfg) == nil {
-			for k, v := range cfg.ModelLimits {
-				configLimits[strings.ToLower(k)] = v
-			}
-		}
 	}
 
 	// ~/.claude/settings.json 里的模型环境变量
@@ -255,6 +252,10 @@ func loadSettingsContextLimits(home string) {
 			continue
 		}
 		base, explicit, hasExplicit := splitModelAndLimit(strings.ToLower(val))
+		// 保存 ANTHROPIC_MODEL 的模型名作为新会话的 fallback
+		if key == "ANTHROPIC_MODEL" && base != "" {
+			configModel = base
+		}
 		if !hasExplicit {
 			continue
 		}

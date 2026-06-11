@@ -107,3 +107,47 @@ func (s *MonitorService) ActPrompt(pid int, text string) error {
 func (s *MonitorService) ActShowWindow(pid int) error {
 	return monitor.Injector.ShowWindow(pid)
 }
+
+// ---- 设置 ----
+
+// SettingsResult 返回给前端的设置数据。
+type SettingsResult struct {
+	CloseQuits bool   `json:"closeQuits"`
+	AutoStart  bool   `json:"autoStart"`
+	Version    string `json:"version"`
+}
+
+// Version 应用版本号。
+const Version = "1.0.0"
+
+// GetSettings 返回当前设置。
+func (s *MonitorService) GetSettings() *SettingsResult {
+	cfg := monitor.GetSettings()
+	auto, _ := monitor.IsAutoStartEnabled()
+	return &SettingsResult{
+		CloseQuits: cfg.CloseQuits,
+		AutoStart:  auto,
+		Version:    Version,
+	}
+}
+
+// SaveSettings 保存设置并同步开机自启状态。
+func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool) error {
+	cfg := monitor.GetSettings()
+	cfg.CloseQuits = closeQuits
+	cfg.AutoStart = autoStart
+	if err := monitor.SetAutoStart(autoStart); err != nil {
+		return err
+	}
+	return monitor.SaveSettings(cfg)
+}
+
+// ShouldQuitOnClose 返回关闭按钮是否应直接退出。
+func (s *MonitorService) ShouldQuitOnClose() bool {
+	return monitor.IsCloseQuit()
+}
+
+// OpenURL 在系统默认浏览器中打开 URL。
+func (s *MonitorService) OpenURL(url string) error {
+	return monitor.OpenInBrowser(url)
+}
