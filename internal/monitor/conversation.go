@@ -23,6 +23,10 @@ type convDetails struct {
 	context int64
 	output  int64
 	topic   string
+	// 累计 token（所有 assistant 消息求和）
+	totalInputTokens  int64
+	totalOutputTokens int64
+	totalCacheTokens  int64 // cache_creation + cache_read
 }
 
 type convCacheEntry struct {
@@ -96,6 +100,10 @@ func parseConversation(data []byte, d *convDetails) {
 				d.model = cl.Message.Model
 				d.context = int64(u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens)
 				d.output = int64(u.OutputTokens)
+				// 累加所有 assistant 消息的 token
+				d.totalInputTokens += int64(u.InputTokens)
+				d.totalOutputTokens += int64(u.OutputTokens)
+				d.totalCacheTokens += int64(u.CacheCreationInputTokens + u.CacheReadInputTokens)
 			}
 		case bytes.Contains(line, []byte(`"type":"ai-title"`)):
 			var at struct {

@@ -26,6 +26,11 @@
 
     <!-- 卡片列表 -->
     <div id="cards-container">
+      <div id="sort-bar">
+        <button class="sort-btn active" data-sort="updatedAt" data-dir="desc" onclick="handleSort('updatedAt')">最后活动 <span class="sort-arrow">↓</span></button>
+        <button class="sort-btn" data-sort="startedAt" data-dir="desc" onclick="handleSort('startedAt')">建立时间 <span class="sort-arrow">↓</span></button>
+        <button class="sort-btn" data-sort="contextTokens" data-dir="desc" onclick="handleSort('contextTokens')">Context 用量 <span class="sort-arrow">↓</span></button>
+      </div>
       <div id="cards"></div>
       <div id="empty-state" class="hidden">
         <div class="empty-icon">🌙</div>

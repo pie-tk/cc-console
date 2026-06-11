@@ -16,13 +16,17 @@ type Instance struct {
 	OutputTokens    int64  `json:"outputTokens"`
 	Topic           string `json:"topic"`
 	ContextLimit    int64  `json:"contextLimit"` // 模型上下文上限（0 表示未知）
+	// 累计 token（整个会话所有 assistant 消息求和）
+	TotalInputTokens  int64 `json:"totalInputTokens"`
+	TotalOutputTokens int64 `json:"totalOutputTokens"`
+	TotalCacheTokens  int64 `json:"totalCacheTokens"`
 }
 
 // StatsInfo 统计信息，供前端使用。
 type StatsInfo struct {
-	Online  int   `json:"online"`
-	Busy    int   `json:"busy"`
-	Idle    int   `json:"idle"`
-	Stale   int   `json:"stale"`
-	Context int64 `json:"context"` // 总 context tokens
+	Online     int   `json:"online"`
+	Busy       int   `json:"busy"`
+	Idle       int   `json:"idle"`
+	Stale      int   `json:"stale"`
+	TotalTokens int64 `json:"totalTokens"` // 所有实例累计 tokens
 }

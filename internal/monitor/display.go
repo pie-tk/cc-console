@@ -36,6 +36,15 @@ func TotalContext(insts []Instance) int64 {
 	return t
 }
 
+// TotalTokens 返回所有实例的累计 token 总量（input + output + cache）。
+func TotalTokens(insts []Instance) int64 {
+	var t int64
+	for _, it := range insts {
+		t += it.TotalInputTokens + it.TotalOutputTokens + it.TotalCacheTokens
+	}
+	return t
+}
+
 func StatusText(s string) string {
 	switch s {
 	case "busy":

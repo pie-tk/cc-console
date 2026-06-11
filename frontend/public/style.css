@@ -134,6 +134,37 @@ body {
   gap: 10px;
 }
 
+/* ===== Sort Bar ===== */
+#sort-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 0 8px 0;
+}
+.sort-btn {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 9pt;
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.sort-btn:hover {
+  border-color: var(--accent);
+  color: var(--window-text);
+}
+.sort-btn.active {
+  background: var(--tag-bg);
+  border-color: var(--accent);
+  color: var(--window-text);
+  font-weight: 500;
+}
+.sort-arrow {
+  font-size: 8pt;
+}
+
 /* ===== Card ===== */
 .card {
   display: flex;
@@ -163,21 +194,14 @@ body {
 .card-row + .card-row { margin-top: 6px; }
 
 .card-emoji { font-size: 12pt; line-height: 1; }
-.card-pid { font-size: 11pt; font-weight: bold; color: var(--window-text); }
+.card-title { font-size: 11pt; font-weight: bold; color: var(--window-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .card-status { font-size: 9pt; font-weight: 500; }
+.card-pid-subtle { font-size: 8pt; color: var(--subtle-text); font-family: "Cascadia Code", "Consolas", monospace; }
 .card-status.busy { color: var(--status-busy); animation: pulse-busy 1.6s ease-in-out infinite; }
 .card-status.idle { color: var(--status-idle); }
 .card-status.unknown { color: var(--status-unknown); }
 .card-model { font-size: 9pt; color: var(--secondary-text); background: var(--tag-bg); padding: 1px 6px; border-radius: 3px; }
 .card-duration { font-size: 9pt; color: var(--subtle-text); margin-left: auto; }
-
-.card-cwd {
-  font-size: 9pt;
-  color: var(--secondary-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .card-topic {
   font-size: 10pt;
@@ -215,6 +239,16 @@ body {
   font-size: 9pt;
   color: var(--subtle-text);
   margin-left: auto;
+}
+
+.card-tokens {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 9pt;
+  color: var(--secondary-text);
+}
+
+.card-total-tokens {
+  color: var(--subtle-text);
 }
 
 /* ===== Action Buttons ===== */

@@ -56,7 +56,7 @@ func (s *MonitorService) DetectInstances() (*DetectResult, error) {
 			Busy:    monitor.CountStatus(live, "busy"),
 			Idle:    monitor.CountStatus(live, "idle"),
 			Stale:   len(stale),
-			Context: monitor.TotalContext(live),
+			TotalTokens: monitor.TotalTokens(live),
 		},
 	}, nil
 }
@@ -118,7 +118,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {

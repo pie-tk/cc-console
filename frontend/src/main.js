@@ -18,6 +18,8 @@ const ID_OPEN_URL      = 2662437060;
 let currentPids = [];
 let promptTargetPid = null;
 let footTimer = null;
+let sortField = 'updatedAt';
+let sortDir = 'desc';
 
 // ---- Boot ----
 async function boot() {
@@ -73,7 +75,7 @@ function updateStats(stats) {
     return;
   }
   const parts = ["在线 " + stats.online, "🔴 " + stats.busy + " 忙碌", "🟢 " + stats.idle + " 空闲"];
-  if (stats.context > 0) parts.push("📦 " + formatTokens(stats.context) + " context");
+  if (stats.totalTokens > 0) parts.push("📦 " + formatTokens(stats.totalTokens) + " tokens");
   if (stats.stale > 0) parts.push("🌓 " + stats.stale + " 残留");
   el.textContent = parts.join("  ·  ");
 }
@@ -90,7 +92,7 @@ function updateClock() {
 function renderCards(live, stale) {
   const container = document.getElementById("cards");
   const emptyState = document.getElementById("empty-state");
-  const all = [...live, ...stale.map(s => Object.assign({}, s, { _stale: true }))];
+  const all = sortInstances([...live, ...stale.map(s => Object.assign({}, s, { _stale: true }))]);
 
   if (all.length === 0) {
     container.innerHTML = "";
@@ -113,6 +115,61 @@ function renderCards(live, stale) {
   }
 }
 
+// ---- Sort ----
+function sortInstances(arr) {
+  if (sortField === 'updatedAt') {
+    // 最后活动：先按 busy > idle > stale 分组，再按时间排序
+    // 降序（最新在前）：busy 优先 → idle → stale，各组内按时间降序
+    // 升序（最旧在前）：idle 优先 → busy → stale，各组内按时间升序
+    function rank(inst) {
+      if (inst._stale) return 2;
+      return inst.status === 'busy' ? 0 : 1;
+    }
+    return arr.slice().sort(function(a, b) {
+      var ra = rank(a), rb = rank(b);
+      if (ra !== rb) return sortDir === 'desc' ? ra - rb : rb - ra;
+      var va = a.updatedAt || 0, vb = b.updatedAt || 0;
+      return sortDir === 'desc' ? vb - va : va - vb;
+    });
+  }
+  return arr.slice().sort(function(a, b) {
+    var va = a[sortField] || 0;
+    var vb = b[sortField] || 0;
+    return sortDir === 'desc' ? vb - va : va - vb;
+  });
+}
+
+window.handleSort = function(field) {
+  if (sortField === field) {
+    sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    sortField = field;
+    sortDir = 'desc';
+  }
+  updateSortBar();
+  currentPids = [];
+  refresh();
+};
+
+function updateSortBar() {
+  var btns = document.querySelectorAll('.sort-btn');
+  for (var i = 0; i < btns.length; i++) {
+    var btn = btns[i];
+    var isActive = btn.dataset.sort === sortField;
+    btn.classList.toggle('active', isActive);
+    var arrow = btn.querySelector('.sort-arrow');
+    arrow.textContent = isActive ? (sortDir === 'desc' ? '↓' : '↑') : '↓';
+    btn.dataset.dir = isActive ? sortDir : 'desc';
+  }
+}
+
+function cwdTitle(cwd) {
+  if (!cwd) return "（未知目录）";
+  var parts = cwd.replace(/\\/g, '/').replace(/\/$/, '').split('/');
+  if (parts.length <= 2) return cwd;
+  return '\\' + parts.slice(-2).join('\\');
+}
+
 function cardHTML(inst) {
   const stale = inst._stale ? " stale" : "";
   const emoji = statusEmoji(inst.status);
@@ -120,22 +177,22 @@ function cardHTML(inst) {
   const label = statusLabel(inst.status);
   const model = modelDisplay(inst);
   const cwd = inst.cwd || "";
+  const title = cwdTitle(cwd);
   const topic = topicDisplay(inst);
   const ctxBar = contextBar(inst);
   const ctxDetail = contextDetail(inst);
   const output = outputDisplay(inst);
+  const totalTokens = totalTokensDisplay(inst);
 
   return '<div class="card' + stale + '" data-pid="' + inst.pid + '">'
     + '<div class="card-inner">'
     + '<div class="card-row">'
     + '<span class="card-emoji">' + emoji + '</span>'
-    + '<span class="card-pid">PID ' + inst.pid + '</span>'
+    + '<span class="card-title" data-field="title" title="' + escAttr(cwd) + '">' + escHtml(title) + '</span>'
     + '<span class="card-status ' + statusClass + '" data-field="status">' + label + '</span>'
+    + '<span class="card-pid-subtle">PID ' + inst.pid + '</span>'
     + '<span class="card-model" data-field="model">' + model + '</span>'
     + '<span class="card-duration" data-field="duration">' + humanDuration(inst.startedAt) + '</span>'
-    + '</div>'
-    + '<div class="card-row">'
-    + '<span class="card-cwd" data-field="cwd">📁 ' + cwd + '</span>'
     + '</div>'
     + '<div class="card-row">'
     + '<span class="card-topic" data-field="topic">💬 ' + topic + '</span>'
@@ -146,6 +203,7 @@ function cardHTML(inst) {
     + '<span class="context-detail" data-field="ctxDetail">' + ctxDetail + '</span>'
     + '<span class="card-output" data-field="output">↑ ' + output + '</span>'
     + '</div>'
+    + (totalTokens ? '<div class="card-row card-tokens"><span class="card-total-tokens" data-field="totalTokens">📦 ' + totalTokens + '</span></div>' : '')
     + '</div>'
     + '<div class="card-actions">'
     + '<button class="action-btn" onclick="handleClear(' + inst.pid + ')">清空</button>'
@@ -159,21 +217,50 @@ function cardHTML(inst) {
 function updateCardText(el, inst) {
   if (!el) return;
   const set = (sel, val) => { const e = el.querySelector(sel); if (e) e.textContent = val; };
+  set("[data-field=title]", cwdTitle(inst.cwd || ""));
   set("[data-field=status]", statusLabel(inst.status));
   set("[data-field=model]", modelDisplay(inst));
   set("[data-field=duration]", humanDuration(inst.startedAt));
-  set("[data-field=cwd]", "📁 " + (inst.cwd || ""));
   set("[data-field=topic]", "💬 " + topicDisplay(inst));
   set("[data-field=ctxBar]", contextBar(inst));
   set("[data-field=ctxPct]", contextPct(inst));
   set("[data-field=ctxDetail]", contextDetail(inst));
   set("[data-field=output]", "↑ " + outputDisplay(inst));
 
+  // 累计 token 行：动态插入/更新/移除
+  var totalTokens = totalTokensDisplay(inst);
+  var tokensEl = el.querySelector("[data-field=totalTokens]");
+  if (totalTokens) {
+    if (!tokensEl) {
+      // 插入新行到 card-context 之后
+      var row = document.createElement("div");
+      row.className = "card-row card-tokens";
+      row.innerHTML = '<span class="card-total-tokens" data-field="totalTokens">📦 ' + totalTokens + '</span>';
+      var ctxRow = el.querySelector(".card-context");
+      if (ctxRow && ctxRow.nextSibling) {
+        ctxRow.parentNode.insertBefore(row, ctxRow.nextSibling);
+      } else if (ctxRow) {
+        ctxRow.parentNode.appendChild(row);
+      }
+    } else {
+      tokensEl.textContent = "📦 " + totalTokens;
+    }
+  } else if (tokensEl) {
+    var row = tokensEl.parentNode;
+    row.parentNode.removeChild(row);
+  }
+
+  var titleEl = el.querySelector("[data-field=title]");
+  if (titleEl) titleEl.title = inst.cwd || "";
   var statusEl = el.querySelector(".card-status");
   if (statusEl) statusEl.className = "card-status " + (inst.status || "unknown");
   var barEl = el.querySelector(".context-bar");
   if (barEl) barEl.className = "context-bar " + contextBarClass(inst);
 }
+
+// ---- Escape helpers ----
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // ---- Display helpers ----
 function statusEmoji(s) {
@@ -203,6 +290,16 @@ function topicDisplay(inst) {
 function outputDisplay(inst) {
   if (!inst.hasConversation) return "（新）";
   return formatTokens(inst.outputTokens);
+}
+
+function totalTokensDisplay(inst) {
+  if (!inst.hasConversation) return "";
+  var tin = inst.totalInputTokens || 0;
+  var tout = inst.totalOutputTokens || 0;
+  var tcache = inst.totalCacheTokens || 0;
+  var total = tin + tout + tcache;
+  if (total <= 0) return "";
+  return formatTokens(total) + " (in: " + formatTokens(tin) + ", out: " + formatTokens(tout) + ", cache: " + formatTokens(tcache) + ")";
 }
 
 function contextBar(inst) {

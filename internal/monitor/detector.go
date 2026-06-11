@@ -66,11 +66,11 @@ func Detect() (live []Instance, stale []Instance, err error) {
 func GetStats() StatsInfo {
 	live, stale, _ := Detect()
 	return StatsInfo{
-		Online:  len(live),
-		Busy:    CountStatus(live, "busy"),
-		Idle:    CountStatus(live, "idle"),
-		Stale:   len(stale),
-		Context: TotalContext(live),
+		Online:      len(live),
+		Busy:        CountStatus(live, "busy"),
+		Idle:        CountStatus(live, "idle"),
+		Stale:       len(stale),
+		TotalTokens: TotalTokens(live),
 	}
 }
 
@@ -112,6 +112,9 @@ func buildInstance(pid int, sessions map[int]*SessionInfo) Instance {
 	inst.ContextTokens = d.context
 	inst.OutputTokens = d.output
 	inst.Topic = d.topic
+	inst.TotalInputTokens = d.totalInputTokens
+	inst.TotalOutputTokens = d.totalOutputTokens
+	inst.TotalCacheTokens = d.totalCacheTokens
 	// JSONL 还没有模型信息时，fallback 到 settings.json 的 ANTHROPIC_MODEL
 	if inst.Model == "" && configModel != "" {
 		inst.Model = configModel
