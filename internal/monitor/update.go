@@ -14,13 +14,11 @@ type ReleaseInfo struct {
 	Version     string `json:"version"`     // 如 "v1.2.0"
 	Name        string `json:"name"`        // release 标题
 	Body        string `json:"body"`        // release notes (markdown)
-	DownloadURL string `json:"downloadUrl"` // exe asset 下载地址
+	DownloadURL string `json:"downloadUrl"` // 安装包下载地址
 	PublishedAt string `json:"publishedAt"`
 }
 
 // CheckLatestRelease 调用 GitHub API 获取最新 release。
-// owner/repo 如 "pie-tk"/"claude-code-monitor"。
-// token 为可选的 GitHub PAT，传空字符串则不认证。
 func CheckLatestRelease(owner, repo, token string) (*ReleaseInfo, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
 
@@ -45,7 +43,7 @@ func CheckLatestRelease(owner, repo, token string) (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("GitHub Token 无效，请检查后重试")
 	}
 	if resp.StatusCode == 403 || resp.StatusCode == 429 {
-		return nil, fmt.Errorf("GitHub API 限流（未认证 60次/小时），可设置 GH_TOKEN 环境变量提升限额")
+		return nil, fmt.Errorf("GitHub API 限流（未认证 60次/小时），如有开启网络代理或 VPN 可关闭后重试")
 	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("GitHub API 返回 HTTP %d", resp.StatusCode)
@@ -65,15 +63,23 @@ func CheckLatestRelease(owner, repo, token string) (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("解析响应失败: %w", err)
 	}
 
-	// 找到 exe asset
+	// 优先匹配安装包，兼容旧版裸 exe
 	downloadURL := ""
 	for _, a := range apiResp.Assets {
-		if strings.HasSuffix(strings.ToLower(a.Name), ".exe") {
+		name := strings.ToLower(a.Name)
+		if strings.HasPrefix(name, "claude-monitor-setup") && strings.HasSuffix(name, ".exe") {
 			downloadURL = a.BrowserDownloadURL
 			break
 		}
 	}
-	// 如果没有 exe asset，fallback 到 release 页面
+	if downloadURL == "" {
+		for _, a := range apiResp.Assets {
+			if strings.HasSuffix(strings.ToLower(a.Name), ".exe") {
+				downloadURL = a.BrowserDownloadURL
+				break
+			}
+		}
+	}
 	if downloadURL == "" {
 		downloadURL = fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, apiResp.TagName)
 	}
@@ -88,7 +94,6 @@ func CheckLatestRelease(owner, repo, token string) (*ReleaseInfo, error) {
 }
 
 // IsNewer 比较两个语义化版本，latest > current 时返回 true。
-// 版本号格式如 "1.1.0"（不带 v 前缀）。
 func IsNewer(latest, current string) bool {
 	lp := parseSemver(latest)
 	cp := parseSemver(current)
@@ -100,7 +105,7 @@ func IsNewer(latest, current string) bool {
 			return false
 		}
 	}
-	return false // 相等不算更新
+	return false
 }
 
 // GitHubToken 优先读 GH_TOKEN，其次 GITHUB_TOKEN。

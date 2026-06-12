@@ -716,6 +716,7 @@ body {
   transition: opacity 0.15s;
 }
 .about-link:hover { opacity: 0.9; }
+.about-link:disabled { opacity: 0.4; cursor: default; }
 
 /* Update Area */
 .update-area {

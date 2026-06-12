@@ -4,13 +4,22 @@ vars:
   APP_NAME: "claude-monitor"
   BIN_DIR: "bin"
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+  VERSION:
+    sh: grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/\1/'
+  ISCC: "C:\\Users\\PIE TK\\AppData\\Local\\Programs\\Inno Setup 6\\ISCC.exe"
 
 tasks:
   build:
-    summary: Builds the application
+    summary: Builds the application and installer
     cmds:
       - cd frontend && npm run build
       - go build -ldflags="-H windowsgui -s -w" -o {{.APP_NAME}}.exe .
+      - task: setup
+
+  setup:
+    summary: Builds the Inno Setup installer
+    cmds:
+      - powershell -Command "& '{{.ISCC}}' /DMyAppVersion={{.VERSION}} setup.iss"
 
   dev:
     summary: Runs the application in development mode

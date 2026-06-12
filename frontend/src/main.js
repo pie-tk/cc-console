@@ -600,6 +600,11 @@ function showUpdateStatus(which) {
 }
 
 window.checkUpdateManually = async function() {
+  var btn = document.getElementById("update-check-btn");
+  // 节流：点完后 10 秒内不可再次点击
+  if (btn.disabled) return;
+  btn.disabled = true;
+
   showUpdateStatus("update-checking");
   try {
     var info = await Call.ByID(ID_CHECK_UPDATE);
@@ -614,7 +619,6 @@ window.checkUpdateManually = async function() {
   } catch (e) {
     var errMsg = e && e.message ? e.message : "检查失败，请检查网络";
     var errEl = document.getElementById("update-error");
-    // 降级：限流或网络错误时提供浏览器查看入口
     if (errMsg.indexOf("限流") >= 0 || errMsg.indexOf("网络请求失败") >= 0) {
       errEl.innerHTML = '⚠ ' + errMsg + '<br><button class="about-link" style="margin-top:6px" onclick="window.openSettingsGithub()">在浏览器中查看 Releases</button>';
     } else {
@@ -622,6 +626,8 @@ window.checkUpdateManually = async function() {
     }
     showUpdateStatus("update-error");
   }
+  // 10 秒后恢复按钮
+  setTimeout(function() { btn.disabled = false; }, 10000);
 };
 
 window.downloadUpdate = async function() {
