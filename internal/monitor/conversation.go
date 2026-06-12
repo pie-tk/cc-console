@@ -27,6 +27,11 @@ type convDetails struct {
 	totalInputTokens  int64
 	totalOutputTokens int64
 	totalCacheTokens  int64 // cache_creation + cache_read
+	// 会话动态信息（主题行右侧）
+	lastUserQuery string // 最近一条真实用户提问（排除 tool_result 回显）
+	lastReplySnip string // 最近一条 assistant text 块片段
+	turns         int    // 消息轮数（含 text 块的 user 消息计数）
+	lastTool      string // 最近使用的工具名（最后一个 tool_use 的 name）
 }
 
 type convCacheEntry struct {
@@ -89,21 +94,37 @@ func parseConversation(data []byte, d *convDetails) {
 		}
 		switch {
 		case bytes.Contains(line, []byte(`"type":"assistant"`)):
+			// 一次 unmarshal 同时取 model/usage 和 content 块（text / tool_use）
 			var cl struct {
 				Message struct {
-					Model string     `json:"model"`
-					Usage *usageInfo `json:"usage"`
+					Model   string     `json:"model"`
+					Usage   *usageInfo `json:"usage"`
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+						Name string `json:"name"` // tool_use 块的工具名
+					} `json:"content"`
 				} `json:"message"`
 			}
-			if json.Unmarshal(line, &cl) == nil && cl.Message.Usage != nil {
-				u := cl.Message.Usage
-				d.model = cl.Message.Model
-				d.context = int64(u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens)
-				d.output = int64(u.OutputTokens)
-				// 累加所有 assistant 消息的 token
-				d.totalInputTokens += int64(u.InputTokens)
-				d.totalOutputTokens += int64(u.OutputTokens)
-				d.totalCacheTokens += int64(u.CacheCreationInputTokens + u.CacheReadInputTokens)
+			if json.Unmarshal(line, &cl) == nil {
+				if cl.Message.Usage != nil {
+					u := cl.Message.Usage
+					d.model = cl.Message.Model
+					d.context = int64(u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens)
+					d.output = int64(u.OutputTokens)
+					// 累加所有 assistant 消息的 token
+					d.totalInputTokens += int64(u.InputTokens)
+					d.totalOutputTokens += int64(u.OutputTokens)
+					d.totalCacheTokens += int64(u.CacheCreationInputTokens + u.CacheReadInputTokens)
+				}
+				for _, b := range cl.Message.Content {
+					if b.Type == "text" && b.Text != "" {
+						d.lastReplySnip = b.Text // 不断覆盖，保留最后一条
+					}
+					if b.Type == "tool_use" && b.Name != "" {
+						d.lastTool = b.Name // 不断覆盖，保留最后一个
+					}
+				}
 			}
 		case bytes.Contains(line, []byte(`"type":"ai-title"`)):
 			var at struct {
@@ -112,17 +133,29 @@ func parseConversation(data []byte, d *convDetails) {
 			if json.Unmarshal(line, &at) == nil && at.AiTitle != "" {
 				d.topic = at.AiTitle // 不断覆盖，保留最后一条
 			}
-		case !firstUserSet && bytes.Contains(line, []byte(`"type":"user"`)):
-			if t := extractUserText(line); t != "" {
-				firstUser = t
+		case bytes.Contains(line, []byte(`"type":"user"`)):
+			// 首条 user 文本作为 topic 回退
+			t := extractUserText(line)
+			if !firstUserSet {
+				if t != "" {
+					firstUser = t
+				}
+				firstUserSet = true
 			}
-			firstUserSet = true
+			// 每条含 text 块的 user 消息都是一次真实提问（排除纯 tool_result 回显）
+			if t != "" {
+				d.lastUserQuery = t
+				d.turns++
+			}
 		}
 	}
 
 	if d.topic == "" && firstUser != "" {
 		d.topic = TruncateRunes(firstUser, 60)
 	}
+	// 截断长文本，避免缓存条目膨胀
+	d.lastUserQuery = TruncateRunes(d.lastUserQuery, 80)
+	d.lastReplySnip = TruncateRunes(d.lastReplySnip, 120)
 }
 
 // extractUserText 从一条 user 消息行中提取纯文本（content 为字符串或 text 块数组）。

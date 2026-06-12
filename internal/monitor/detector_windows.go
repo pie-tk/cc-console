@@ -3,78 +3,31 @@
 package monitor
 
 import (
-	"strings"
-	"unsafe"
-
 	"golang.org/x/sys/windows"
 )
 
 func init() {
-	listClaudeProcesses = listClaudeProcessesWindows
+	isProcessAlive = isProcessAliveWindows
 }
 
-func listClaudeProcessesWindows() ([]procInfo, error) {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+// isProcessAliveWindows 验证 pid 对应的进程仍在运行，且创建时间与 session 记录的
+// startedAt 一致（±15s 容差，排除 PID 复用）。不依赖进程名——session 文件的 pid 由
+// Claude Code 启动时写入，天然可信，只需确认它还活着且未被复用。
+func isProcessAliveWindows(pid int, startedAt int64) bool {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return nil, err
-	}
-	defer windows.CloseHandle(snapshot)
-
-	var out []procInfo
-	// Toolhelp32 快照在进程增删瞬间偶尔会把同一个进程列出两次，
-	// 导致同一 PID 在界面里重复成两行。按 PID 去重，保证每个 PID 最多一条。
-	seen := make(map[int]bool)
-	var pe windows.ProcessEntry32
-	pe.Size = uint32(unsafe.Sizeof(pe))
-	if err := windows.Process32First(snapshot, &pe); err != nil {
-		return nil, err
-	}
-	for {
-		name := strings.ToLower(windows.UTF16ToString(pe.ExeFile[:]))
-		name = strings.TrimSuffix(name, ".exe")
-		if name == "claude" {
-			pid := int(pe.ProcessID)
-			if !seen[pid] {
-				seen[pid] = true
-				out = append(out, procInfo{
-					pid:          pid,
-					exePath:      processExePath(pe.ProcessID),
-					createTimeMs: processCreateTimeMs(pe.ProcessID),
-				})
-			}
-		}
-		if err := windows.Process32Next(snapshot, &pe); err != nil {
-			break
-		}
-	}
-	return out, nil
-}
-
-func processExePath(pid uint32) string {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return ""
-	}
-	defer windows.CloseHandle(h)
-	var buf [windows.MAX_PATH + 1]uint16
-	size := uint32(len(buf))
-	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil {
-		return ""
-	}
-	return windows.UTF16ToString(buf[:size])
-}
-
-func processCreateTimeMs(pid uint32) int64 {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return 0
+		return false // 进程已退出或无权限访问
 	}
 	defer windows.CloseHandle(h)
 	var c, e, k, u windows.Filetime
 	if err := windows.GetProcessTimes(h, &c, &e, &k, &u); err != nil {
-		return 0
+		return false
 	}
-	return filetimeToEpochMs(c)
+	createMs := filetimeToEpochMs(c)
+	if createMs == 0 {
+		return false
+	}
+	return abs64(createMs-startedAt) <= 15000
 }
 
 func filetimeToEpochMs(ft windows.Filetime) int64 {

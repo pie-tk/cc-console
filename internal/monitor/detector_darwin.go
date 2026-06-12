@@ -2,11 +2,9 @@
 
 package monitor
 
-import "fmt"
-
 func init() {
-	listClaudeProcesses = func() ([]procInfo, error) {
-		// TODO: 实现 macOS 进程枚举（ps / syscall.Sysctl）
-		return nil, fmt.Errorf("macOS 进程枚举尚未实现")
+	// TODO: 实现 macOS 进程存活 + 启动时间验证（sysctl KERN_PROC / kill(pid,0)）
+	isProcessAlive = func(pid int, startedAt int64) bool {
+		return false
 	}
 }

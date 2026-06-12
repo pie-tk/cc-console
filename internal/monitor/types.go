@@ -20,6 +20,11 @@ type Instance struct {
 	TotalInputTokens  int64 `json:"totalInputTokens"`
 	TotalOutputTokens int64 `json:"totalOutputTokens"`
 	TotalCacheTokens  int64 `json:"totalCacheTokens"`
+	// 会话动态信息（主题行右侧）
+	LastUserQuery string `json:"lastUserQuery"` // 最近一条真实用户提问
+	LastReplySnip string `json:"lastReplySnip"` // 最近一条助手回复片段
+	Turns         int    `json:"turns"`         // 消息轮数
+	LastTool      string `json:"lastTool"`      // 最近使用的工具名
 }
 
 // StatsInfo 统计信息，供前端使用。

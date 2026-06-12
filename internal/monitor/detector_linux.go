@@ -2,11 +2,9 @@
 
 package monitor
 
-import "fmt"
-
 func init() {
-	listClaudeProcesses = func() ([]procInfo, error) {
-		// TODO: 实现 Linux 进程枚举（/proc）
-		return nil, fmt.Errorf("Linux 进程枚举尚未实现")
+	// TODO: 实现 Linux 进程存活 + 启动时间验证（/proc/<pid>/stat 第 22 字段 starttime）
+	isProcessAlive = func(pid int, startedAt int64) bool {
+		return false
 	}
 }

@@ -6,13 +6,6 @@ import (
 	"sort"
 )
 
-// procInfo 是一个 claude.exe 进程的基本信息。
-type procInfo struct {
-	pid          int
-	exePath      string
-	createTimeMs int64 // 进程创建时间（epoch 毫秒），0 表示读取失败
-}
-
 func claudeDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -22,21 +15,19 @@ func claudeDir() string {
 }
 
 // Detect 返回当前存活的 Claude Code 实例，以及残留（进程已退出但 session 文件仍在）的会话。
+// session 文件由 Claude Code 启动时写入，pid 天然可信；逐个验证存活 + 启动时间
+// （±15s 防 PID 复用），不依赖进程名，覆盖 claude.exe / node.exe 等所有安装方式。
 func Detect() (live []Instance, stale []Instance, err error) {
-	procs, err := listClaudeProcesses()
-	if err != nil {
-		return nil, nil, err
-	}
 	sessionsDir := filepath.Join(claudeDir(), "sessions")
 	sessions := loadSessions(sessionsDir) // map[pid]*SessionInfo
 
 	liveSet := make(map[int]bool)
-	for _, p := range procs {
-		if !isClaudeCode(p, sessions) {
+	for pid, s := range sessions {
+		if !isProcessAlive(pid, s.StartedAt) {
 			continue
 		}
-		live = append(live, buildInstance(p.pid, sessions))
-		liveSet[p.pid] = true
+		live = append(live, buildInstance(pid, sessions))
+		liveSet[pid] = true
 	}
 
 	for pid, s := range sessions {
@@ -74,21 +65,6 @@ func GetStats() StatsInfo {
 	}
 }
 
-// isClaudeCode 判断一个 claude.exe 进程是否为一个真正的 Claude Code 交互实例。
-//
-// 判定标准：必须有对应的 session 文件（~/.claude/sessions/<pid>.json），且进程
-// 启动时间与该会话的 startedAt 一致（容差 15s，排除 PID 复用）。
-func isClaudeCode(p procInfo, sessions map[int]*SessionInfo) bool {
-	s, ok := sessions[p.pid]
-	if !ok {
-		return false
-	}
-	if p.createTimeMs == 0 {
-		return false
-	}
-	return abs64(p.createTimeMs-s.StartedAt) <= 15000
-}
-
 func buildInstance(pid int, sessions map[int]*SessionInfo) Instance {
 	inst := Instance{Pid: pid, Status: "unknown"}
 	s, ok := sessions[pid]
@@ -115,6 +91,10 @@ func buildInstance(pid int, sessions map[int]*SessionInfo) Instance {
 	inst.TotalInputTokens = d.totalInputTokens
 	inst.TotalOutputTokens = d.totalOutputTokens
 	inst.TotalCacheTokens = d.totalCacheTokens
+	inst.LastUserQuery = d.lastUserQuery
+	inst.LastReplySnip = d.lastReplySnip
+	inst.Turns = d.turns
+	inst.LastTool = d.lastTool
 	// JSONL 还没有模型信息时，fallback 到 settings.json 的 ANTHROPIC_MODEL
 	if inst.Model == "" && configModel != "" {
 		inst.Model = configModel
@@ -130,5 +110,5 @@ func instanceFromSession(pid int, s *SessionInfo) Instance {
 	return buildInstance(pid, map[int]*SessionInfo{pid: s})
 }
 
-// listClaudeProcesses 由平台特定文件实现。
-var listClaudeProcesses func() ([]procInfo, error)
+// isProcessAlive 由平台特定文件实现：验证 pid 存活且创建时间与 startedAt 匹配（±15s 防 PID 复用）。
+var isProcessAlive func(pid int, startedAt int64) bool

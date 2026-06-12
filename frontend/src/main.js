@@ -194,8 +194,13 @@ function cardHTML(inst) {
     + '<span class="card-model" data-field="model">' + model + '</span>'
     + '<span class="card-duration" data-field="duration">' + humanDuration(inst.startedAt) + '</span>'
     + '</div>'
-    + '<div class="card-row">'
+    + '<div class="card-row card-topic-row">'
     + '<span class="card-topic" data-field="topic">💬 ' + topic + '</span>'
+    + '<span class="card-meta">'
+    + '<span class="card-lastquery" data-field="lastQuery" title="' + escAttr(lastQueryTitle(inst)) + '">' + escHtml(lastQueryDisplay(inst)) + '</span>'
+    + '<span class="card-turns" data-field="turns">' + turnsDisplay(inst) + '</span>'
+    + '<span class="card-tool" data-field="lastTool">' + toolDisplay(inst) + '</span>'
+    + '</span>'
     + '</div>'
     + '<div class="card-row card-context">'
     + '<span class="context-bar ' + contextBarClass(inst) + '" data-field="ctxBar">' + ctxBar + '</span>'
@@ -226,6 +231,11 @@ function updateCardText(el, inst) {
   set("[data-field=ctxPct]", contextPct(inst));
   set("[data-field=ctxDetail]", contextDetail(inst));
   set("[data-field=output]", "↑ " + outputDisplay(inst));
+  set("[data-field=lastQuery]", lastQueryDisplay(inst));
+  set("[data-field=turns]", turnsDisplay(inst));
+  set("[data-field=lastTool]", toolDisplay(inst));
+  var qEl = el.querySelector("[data-field=lastQuery]");
+  if (qEl) qEl.title = lastQueryTitle(inst);
 
   // 累计 token 行：动态插入/更新/移除
   var totalTokens = totalTokensDisplay(inst);
@@ -300,6 +310,25 @@ function totalTokensDisplay(inst) {
   var total = tin + tout + tcache;
   if (total <= 0) return "";
   return formatTokens(total) + " (in: " + formatTokens(tin) + ", out: " + formatTokens(tout) + ", cache: " + formatTokens(tcache) + ")";
+}
+
+// ---- 主题行右侧：会话动态信息 ----
+function lastQueryDisplay(inst) {
+  if (!inst.hasConversation || !inst.lastUserQuery) return "";
+  return "📝 " + inst.lastUserQuery;
+}
+function turnsDisplay(inst) {
+  if (!inst.hasConversation || !inst.turns) return "";
+  return "🔄 " + inst.turns;
+}
+function toolDisplay(inst) {
+  if (!inst.hasConversation || !inst.lastTool) return "";
+  return "🔧 " + inst.lastTool;
+}
+// 最近助手回复挂 tooltip（hover 最近提问区显示）
+function lastQueryTitle(inst) {
+  if (!inst.hasConversation || !inst.lastReplySnip) return "";
+  return "🤖 " + inst.lastReplySnip;
 }
 
 function contextBar(inst) {
