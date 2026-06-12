@@ -118,7 +118,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.2.4"
+const Version = "1.2.6"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
@@ -167,7 +167,27 @@ func (s *MonitorService) CheckUpdate() (*monitor.ReleaseInfo, error) {
 	return info, nil
 }
 
-// DownloadUpdate 下载并应用更新。成功后本进程会退出。
+// DownloadUpdate 下载并应用更新。异步执行，通过 Events 推送进度，立即返回。
 func (s *MonitorService) DownloadUpdate(url string) error {
-	return monitor.DownloadAndReplace(url)
+	go func() {
+		onProgress := func(downloaded, total int64) {
+			pct := 0
+			if total > 0 {
+				pct = int(downloaded * 100 / total)
+			}
+			s.window.EmitEvent("update:progress", map[string]any{
+				"status":     "downloading",
+				"downloaded": downloaded,
+				"total":      total,
+				"percent":    pct,
+			})
+		}
+		if err := monitor.DownloadAndReplace(url, onProgress); err != nil {
+			s.window.EmitEvent("update:progress", map[string]any{
+				"status":  "error",
+				"message": err.Error(),
+			})
+		}
+	}()
+	return nil
 }

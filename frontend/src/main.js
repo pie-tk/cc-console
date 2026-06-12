@@ -1,6 +1,6 @@
 // 直接使用 Wails runtime Call.ByID，绕过自动绑定的循环依赖问题
 // ID 取自自动生成的 frontend/bindings/claude-monitor/service/monitorservice.js
-import { Call } from "@wailsio/runtime";
+import { Call, Events } from "@wailsio/runtime";
 
 // Binding IDs (FNV hash of fully qualified method names)
 const ID_DETECT      = 2236708032;
@@ -630,17 +630,40 @@ window.downloadUpdate = async function() {
     return;
   }
   if (!confirm("确定要下载并安装更新吗？\n\n应用将在下载完成后自动重启。")) return;
+
+  var btn = document.getElementById("update-download-btn");
+  var bar = document.getElementById("update-progress-bar");
+  var fill = document.getElementById("update-progress-fill");
+  btn.textContent = "⬇ 下载中…";
+  btn.disabled = true;
+  bar.classList.remove("hidden");
+  fill.style.width = "0%";
+
+  Events.On("update:progress", function(evt) {
+    var d = evt.data;
+    if (d.status === "downloading") {
+      var pct = d.percent || 0;
+      btn.textContent = "⬇ 下载中 " + pct + "%";
+      fill.style.width = pct + "%";
+    } else if (d.status === "error") {
+      Events.Off("update:progress");
+      flashFoot("更新失败: " + (d.message || "未知错误"));
+      btn.textContent = "⬇ 下载并安装更新";
+      btn.disabled = false;
+      bar.classList.add("hidden");
+      fill.style.width = "0%";
+    }
+  });
+
   try {
-    var btn = document.getElementById("update-download-btn");
-    btn.textContent = "⬇ 下载中…";
-    btn.disabled = true;
     await Call.ByID(ID_DOWNLOAD_UPDATE, pendingDownloadURL);
-    flashFoot("更新已启动");
   } catch (e) {
+    Off("update:progress");
     flashFoot("更新失败: " + (e && e.message ? e.message : e));
-    var btn2 = document.getElementById("update-download-btn");
-    btn2.textContent = "⬇ 下载并安装更新";
-    btn2.disabled = false;
+    btn.textContent = "⬇ 下载并安装更新";
+    btn.disabled = false;
+    bar.classList.add("hidden");
+    fill.style.width = "0%";
   }
 };
 

@@ -758,6 +758,22 @@ body {
 .update-download-btn:hover { opacity: 0.85; }
 .update-download-btn:disabled { opacity: 0.5; cursor: default; }
 
+.update-progress-bar {
+  margin-top: 8px;
+  height: 6px;
+  background: var(--card-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.update-progress-bar.hidden { display: none; }
+.update-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
 .about-links {
   display: flex;
   justify-content: center;
