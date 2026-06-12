@@ -26,11 +26,15 @@ SolidCompression=yes
 DisableWelcomePage=yes
 DisableProgramGroupPage=yes
 
+[Tasks]
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"; Flags: checkedonce
+
 [Files]
 Source: "claude-monitor.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Flags: nowait postinstall; Description: "启动 {#MyAppName}"

@@ -40,16 +40,33 @@
 ## 构建
 
 ```bash
-# 构建（先编译前端，再编译 Go）
+# 构建（先编译前端，再编译 Go，再生成安装包）
 cd frontend && npm run build && cd ..
 go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
 
+# 生成 Inno Setup 安装包
+powershell -Command "& '$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe' /DMyAppVersion=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\(.*\)\".*/\1/') setup.iss"
+
 # 或使用 Taskfile
 task build
+task setup
 
 # CLI 模式（无 WebView，纯终端）
 go run . --list
 ```
+
+## 发布
+
+每次发布需同时上传两个文件到 GitHub Release：
+
+```bash
+# 上传便携版 + 安装包
+gh release upload v<version> ./claude-monitor.exe ./claude-monitor-setup.exe --clobber
+```
+
+Release 资产命名约定：
+- `claude-monitor.exe` — 便携版
+- `claude-monitor-setup.exe` — Inno Setup 安装包
 
 ## 开发
 
