@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="/style.css">
   <title>Claude Code 监控</title>
-  <script type="module" crossorigin src="/assets/index-BHGAdn87.js"></script>
+  <script type="module" crossorigin src="/assets/index-CD8btG23.js"></script>
 </head>
 <body>
   <div id="app">
@@ -112,7 +112,20 @@
             <div class="about-content">
               <p class="about-name">Claude Code 监控</p>
               <p id="about-version" class="about-version">版本 --</p>
-              <button class="about-link" onclick="window.openSettingsGithub()">GitHub</button>
+              <div id="update-area" class="update-area hidden">
+                <span id="update-checking" class="update-status">⏳ 检查更新中…</span>
+                <span id="update-available" class="update-status hidden">
+                  🆕 新版本 <strong id="update-version"></strong> 可用
+                  <p id="update-notes" class="update-notes"></p>
+                  <button id="update-download-btn" class="update-download-btn">⬇ 下载并安装更新</button>
+                </span>
+                <span id="update-uptodate" class="update-status hidden">✅ 已是最新版本</span>
+                <span id="update-error" class="update-status hidden">⚠ 检查失败</span>
+              </div>
+              <div class="about-links">
+                <button class="about-link" id="update-check-btn">检查更新</button>
+                <button class="about-link" onclick="window.openSettingsGithub()">GitHub</button>
+              </div>
             </div>
           </div>
         </div>

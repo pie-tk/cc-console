@@ -12,7 +12,9 @@ const ID_ACT_PROMPT  = 3578199235;
 const ID_ACT_SHOW    = 3029513688;
 const ID_GET_SETTINGS  = 4111710580;
 const ID_SAVE_SETTINGS = 2821561663;
-const ID_OPEN_URL      = 2662437060;
+const ID_OPEN_URL         = 2662437060;
+const ID_CHECK_UPDATE     = 2276698880;
+const ID_DOWNLOAD_UPDATE  = 1405235130;
 
 // ---- State ----
 let currentPids = [];
@@ -108,6 +110,7 @@ function renderCards(live, stale) {
   if (newPids !== oldPids) {
     container.innerHTML = all.map(cardHTML).join("");
     currentPids = all.map(i => i.pid);
+    container.querySelectorAll(".card-history").forEach(function(h) { h.scrollTop = h.scrollHeight; });
   } else {
     all.forEach((inst, i) => {
       updateCardText(container.children[i], inst);
@@ -196,12 +199,8 @@ function cardHTML(inst) {
     + '</div>'
     + '<div class="card-row card-topic-row">'
     + '<span class="card-topic" data-field="topic">💬 ' + topic + '</span>'
-    + '<span class="card-meta">'
-    + '<span class="card-lastquery" data-field="lastQuery" title="' + escAttr(lastQueryTitle(inst)) + '">' + escHtml(lastQueryDisplay(inst)) + '</span>'
-    + '<span class="card-turns" data-field="turns">' + turnsDisplay(inst) + '</span>'
-    + '<span class="card-tool" data-field="lastTool">' + toolDisplay(inst) + '</span>'
-    + '</span>'
     + '</div>'
+    + historyHTML(inst)
     + '<div class="card-row card-context">'
     + '<span class="context-bar ' + contextBarClass(inst) + '" data-field="ctxBar">' + ctxBar + '</span>'
     + '<span class="context-pct" data-field="ctxPct">' + contextPct(inst) + '</span>'
@@ -231,11 +230,27 @@ function updateCardText(el, inst) {
   set("[data-field=ctxPct]", contextPct(inst));
   set("[data-field=ctxDetail]", contextDetail(inst));
   set("[data-field=output]", "↑ " + outputDisplay(inst));
-  set("[data-field=lastQuery]", lastQueryDisplay(inst));
-  set("[data-field=turns]", turnsDisplay(inst));
-  set("[data-field=lastTool]", toolDisplay(inst));
-  var qEl = el.querySelector("[data-field=lastQuery]");
-  if (qEl) qEl.title = lastQueryTitle(inst);
+  // 对话历史区域：比较 historyHash 而非 turns——assistant 回复追加到已有轮次时
+  // turns 不变，但 historyHash（= Σ(len(Q)*31 + len(R)*17)）一定会变。
+  var histEl = el.querySelector(".card-history");
+  var newHash = inst.historyHash || 0;
+  var oldHash = histEl ? parseInt(histEl.getAttribute("data-hist-hash") || "0") : -1;
+  if (newHash !== oldHash) {
+    if (histEl) {
+      histEl.parentNode.removeChild(histEl);
+    }
+    var histHTML = historyHTML(inst);
+    if (histHTML) {
+      var tempDiv = document.createElement("div");
+      tempDiv.innerHTML = histHTML;
+      var newHistEl = tempDiv.firstChild;
+      var topicRow = el.querySelector(".card-topic-row");
+      if (topicRow && topicRow.nextSibling) {
+        topicRow.parentNode.insertBefore(newHistEl, topicRow.nextSibling);
+      }
+      newHistEl.scrollTop = newHistEl.scrollHeight;
+    }
+  }
 
   // 累计 token 行：动态插入/更新/移除
   var totalTokens = totalTokensDisplay(inst);
@@ -266,6 +281,7 @@ function updateCardText(el, inst) {
   if (statusEl) statusEl.className = "card-status " + (inst.status || "unknown");
   var barEl = el.querySelector(".context-bar");
   if (barEl) barEl.className = "context-bar " + contextBarClass(inst);
+  set(".card-emoji", statusEmoji(inst.status));
 }
 
 // ---- Escape helpers ----
@@ -329,6 +345,31 @@ function toolDisplay(inst) {
 function lastQueryTitle(inst) {
   if (!inst.hasConversation || !inst.lastReplySnip) return "";
   return "🤖 " + inst.lastReplySnip;
+}
+
+// ---- 对话历史区域 ----
+function historyHTML(inst) {
+  if (!inst.hasConversation) return "";
+  if (!inst.history || inst.history.length === 0) {
+    return '<div class="card-history card-history-empty">'
+      + '<span class="history-empty-msg">（暂无对话记录）</span>'
+      + '</div>';
+  }
+  var header = '<div class="history-header">'
+    + '<span class="history-turns">🔄 ' + (inst.turns || inst.history.length) + ' 轮对话</span>';
+  if (inst.lastTool) {
+    header += ' · <span class="history-tool">🔧 ' + escHtml(inst.lastTool) + '</span>';
+  }
+  header += '</div>';
+  var items = '';
+  for (var i = 0; i < inst.history.length; i++) {
+    var t = inst.history[i];
+    items += '<div class="history-turn">'
+      + '<div class="history-q">📝 ' + escHtml(t.q || "") + '</div>'
+      + '<div class="history-r">🤖 ' + escHtml(t.r || "") + '</div>'
+      + '</div>';
+  }
+  return '<div class="card-history" data-hist-hash="' + (inst.historyHash || 0) + '">' + header + items + '</div>';
 }
 
 function contextBar(inst) {
@@ -543,3 +584,71 @@ window.openSettingsGithub = async function() {
     flashFoot("打开失败: " + (e && e.message ? e.message : e));
   }
 };
+
+// ---- Update ----
+let pendingDownloadURL = "";
+
+function showUpdateStatus(which) {
+  // 互斥：只显示一个状态 span，移除 hidden 类并用 display 控制
+  var area = document.getElementById("update-area");
+  area.classList.remove("hidden");
+  var states = ["update-checking", "update-available", "update-uptodate", "update-error"];
+  for (var i = 0; i < states.length; i++) {
+    var el = document.getElementById(states[i]);
+    if (el) el.classList.toggle("hidden", states[i] !== which);
+  }
+}
+
+window.checkUpdateManually = async function() {
+  showUpdateStatus("update-checking");
+  try {
+    var info = await Call.ByID(ID_CHECK_UPDATE);
+    if (info) {
+      document.getElementById("update-version").textContent = "v" + (info.version || "");
+      document.getElementById("update-notes").textContent = info.body || "";
+      pendingDownloadURL = info.downloadUrl || "";
+      showUpdateStatus("update-available");
+    } else {
+      showUpdateStatus("update-uptodate");
+    }
+  } catch (e) {
+    var errMsg = e && e.message ? e.message : "检查失败，请检查网络";
+    var errEl = document.getElementById("update-error");
+    // 降级：限流或网络错误时提供浏览器查看入口
+    if (errMsg.indexOf("限流") >= 0 || errMsg.indexOf("网络请求失败") >= 0) {
+      errEl.innerHTML = '⚠ ' + errMsg + '<br><button class="about-link" style="margin-top:6px" onclick="window.openSettingsGithub()">在浏览器中查看 Releases</button>';
+    } else {
+      errEl.textContent = "⚠ " + errMsg;
+    }
+    showUpdateStatus("update-error");
+  }
+};
+
+window.downloadUpdate = async function() {
+  if (!pendingDownloadURL) {
+    flashFoot("没有可用的下载地址");
+    return;
+  }
+  if (!confirm("确定要下载并安装更新吗？\n\n应用将在下载完成后自动重启。")) return;
+  try {
+    var btn = document.getElementById("update-download-btn");
+    btn.textContent = "⬇ 下载中…";
+    btn.disabled = true;
+    await Call.ByID(ID_DOWNLOAD_UPDATE, pendingDownloadURL);
+    flashFoot("更新已启动");
+  } catch (e) {
+    flashFoot("更新失败: " + (e && e.message ? e.message : e));
+    var btn2 = document.getElementById("update-download-btn");
+    btn2.textContent = "⬇ 下载并安装更新";
+    btn2.disabled = false;
+  }
+};
+
+// Bind the check button
+document.getElementById("update-check-btn").addEventListener("click", function() {
+  window.checkUpdateManually();
+});
+// Bind the download button
+document.getElementById("update-download-btn").addEventListener("click", function() {
+  window.downloadUpdate();
+});

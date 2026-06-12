@@ -118,7 +118,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
@@ -150,4 +150,24 @@ func (s *MonitorService) ShouldQuitOnClose() bool {
 // OpenURL 在系统默认浏览器中打开 URL。
 func (s *MonitorService) OpenURL(url string) error {
 	return monitor.OpenInBrowser(url)
+}
+
+// CheckUpdate 检查 GitHub 最新版本。
+// 返回 (info, nil) 表示有新版本可用；
+// 返回 (nil, nil) 表示已是最新；
+// 返回 (nil, error) 表示检查失败（网络/API 错误）。
+func (s *MonitorService) CheckUpdate() (*monitor.ReleaseInfo, error) {
+	info, err := monitor.CheckLatestRelease("pie-tk", "claude-code-monitor", monitor.GitHubToken())
+	if err != nil {
+		return nil, err
+	}
+	if info == nil || !monitor.IsNewer(info.Version, Version) {
+		return nil, nil
+	}
+	return info, nil
+}
+
+// DownloadUpdate 下载并应用更新。成功后本进程会退出。
+func (s *MonitorService) DownloadUpdate(url string) error {
+	return monitor.DownloadAndReplace(url)
 }

@@ -25,6 +25,15 @@ type Instance struct {
 	LastReplySnip string `json:"lastReplySnip"` // 最近一条助手回复片段
 	Turns         int    `json:"turns"`         // 消息轮数
 	LastTool      string `json:"lastTool"`      // 最近使用的工具名
+	// 对话历史（所有 Q&A 轮次，最多 30 轮）
+	History     []HistoryTurn `json:"history,omitempty"`
+	HistoryHash int           `json:"historyHash"` // 历史内容哈希，前端用于检测更新
+}
+
+// HistoryTurn 表示一轮 Q&A 对话（用户提问 + 助手回复片段）。
+type HistoryTurn struct {
+	UserQuery string `json:"q"` // 用户提问，截断至 80 runes
+	ReplySnip string `json:"r"` // 助手回复片段，截断至 120 runes
 }
 
 // StatsInfo 统计信息，供前端使用。

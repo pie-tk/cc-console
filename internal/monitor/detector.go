@@ -95,6 +95,8 @@ func buildInstance(pid int, sessions map[int]*SessionInfo) Instance {
 	inst.LastReplySnip = d.lastReplySnip
 	inst.Turns = d.turns
 	inst.LastTool = d.lastTool
+	inst.History = d.history
+	inst.HistoryHash = d.historyHash
 	// JSONL 还没有模型信息时，fallback 到 settings.json 的 ANTHROPIC_MODEL
 	if inst.Model == "" && configModel != "" {
 		inst.Model = configModel
