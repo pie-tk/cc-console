@@ -3,8 +3,10 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,7 +16,7 @@ import (
 )
 
 // DownloadAndReplace 下载新版本 exe，通过批处理脚本实现自替换。
-// 执行成功后本进程将退出，由批处理脚本完成替换并重启。
+// 下载失败返回 error 供前端提示；成功后通过延时退出确保前端收到响应。
 func DownloadAndReplace(downloadURL string) error {
 	// 1. 确定当前 exe 路径
 	curExe, err := os.Executable()
@@ -35,29 +37,43 @@ func DownloadAndReplace(downloadURL string) error {
 	os.Remove(tmpExe)
 	os.Remove(tmpBat)
 
-	// 自定义 redirect 策略：始终不转发 Authorization header
+	// 传输层超时：连接 20s，响应头 30s，整体 2min
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{Timeout: 20 * time.Second}).DialContext,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
 	client := &http.Client{
-		Timeout: 5 * time.Minute,
+		Transport: transport,
+		Timeout:   2 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("重定向次数过多")
 			}
-			// 清除 Authorization header，避免 S3 签名冲突
 			req.Header.Del("Authorization")
 			return nil
 		},
 	}
-	resp, err := client.Get(downloadURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("创建下载请求失败: %w", err)
+	}
+	req.Header.Set("User-Agent", "claude-code-monitor")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("下载失败: HTTP %d (URL: %s)", resp.StatusCode, downloadURL)
+		return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
 	}
 
-	// 验证 Content-Length 合理（至少 5MB，我们的 exe 约 14MB）
+	// 验证 Content-Length 合理（至少 5MB）
 	minSize := int64(5 * 1024 * 1024)
 	if resp.ContentLength > 0 && resp.ContentLength < minSize {
 		return fmt.Errorf("文件大小异常 (%d bytes)，下载可能不完整", resp.ContentLength)
@@ -77,7 +93,7 @@ func DownloadAndReplace(downloadURL string) error {
 	// 二次验证：实际写入大小
 	if written < minSize {
 		os.Remove(tmpExe)
-		return fmt.Errorf("下载不完整: 仅收到 %.1f MB (预期 > 5 MB)", float64(written)/(1024*1024))
+		return fmt.Errorf("下载不完整: 仅收到 %.1f MB", float64(written)/(1024*1024))
 	}
 
 	// 验证 PE 文件头
@@ -101,7 +117,7 @@ del "%%~f0"
 		return fmt.Errorf("创建更新脚本失败: %w", err)
 	}
 
-	// 4. 执行批处理脚本（detached），然后退出
+	// 4. 执行批处理脚本（detached）
 	cmd := exec.Command("cmd.exe", "/c", "start", "/b", tmpBat)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
@@ -112,8 +128,8 @@ del "%%~f0"
 		return fmt.Errorf("启动更新脚本失败: %w", err)
 	}
 
-	// 退出本进程
-	os.Exit(0)
+	// 5. 延时退出，让 Wails RPC 有时间把成功响应发回前端
+	time.AfterFunc(500*time.Millisecond, func() { os.Exit(0) })
 	return nil
 }
 
@@ -125,7 +141,6 @@ func isValidPE(path string) bool {
 	}
 	defer f.Close()
 
-	// DOS header: 最开始 2 字节必须是 "MZ"
 	var magic [2]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
 		return false
@@ -134,7 +149,6 @@ func isValidPE(path string) bool {
 		return false
 	}
 
-	// 读取 e_lfanew 偏移（位于 DOS header 偏移 0x3C 处，4 字节 LE）
 	if _, err := f.Seek(0x3C, io.SeekStart); err != nil {
 		return false
 	}
@@ -144,7 +158,6 @@ func isValidPE(path string) bool {
 	}
 	offset := int64(peOffset[0]) | int64(peOffset[1])<<8 | int64(peOffset[2])<<16 | int64(peOffset[3])<<24
 
-	// PE signature: "PE\0\0"
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return false
 	}
