@@ -28,8 +28,24 @@ DisableWelcomePage=yes
 DisableProgramGroupPage=yes
 ChangesAssociations=yes
 
+[Languages]
+Name: "zh_CN"; MessagesFile: "Languages\ChineseSimplified.isl"
+Name: "zh_TW"; MessagesFile: "Languages\ChineseTraditional.isl"
+Name: "en"; MessagesFile: "compiler:Default.isl"
+
+[CustomMessages]
+zh_CN.DesktopIcon=创建桌面快捷方式(&D)
+zh_CN.Shortcuts=快捷方式:
+zh_CN.LaunchApp=启动 {#MyAppName}
+zh_TW.DesktopIcon=建立桌面捷徑(&D)
+zh_TW.Shortcuts=捷徑:
+zh_TW.LaunchApp=啟動 {#MyAppName}
+en.DesktopIcon=Create a &desktop shortcut
+en.Shortcuts=Shortcuts:
+en.LaunchApp=Launch {#MyAppName}
+
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"
+Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Shortcuts}"
 
 [Files]
 Source: "claude-monitor.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
@@ -56,5 +72,5 @@ begin
 end;
 
 [Run]
-Filename: "{app}\{#MyAppExe}"; Flags: nowait postinstall; Description: "启动 {#MyAppName}"
+Filename: "{app}\{#MyAppExe}"; Flags: nowait postinstall; Description: "{cm:LaunchApp}"
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
