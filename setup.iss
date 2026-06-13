@@ -26,6 +26,7 @@ Compression=lzma2
 SolidCompression=yes
 DisableWelcomePage=yes
 DisableProgramGroupPage=yes
+ChangesAssociations=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"
@@ -41,10 +42,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  KillCount: Integer;
 begin
   Result := '';
-  KillCount := 0;
 
   // 尝试优雅关闭（WM_CLOSE）— 但 claude-monitor 隐藏到托盘，不退出
   Exec('taskkill', '/im ' + ExpandConstant('{#MyAppExe}'), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -58,4 +57,4 @@ end;
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Flags: nowait postinstall; Description: "启动 {#MyAppName}"
-Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
+Filename: "{win}\system32\cmd.exe"; Parameters: "/c del /q ""%localappdata%\Microsoft\Windows\Explorer\iconcache_*.db"" & del /q ""%localappdata%\IconCache.db"" 2>nul & taskkill /f /im explorer.exe & start explorer.exe"; Flags: runhidden
