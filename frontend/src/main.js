@@ -15,6 +15,7 @@ const ID_SAVE_SETTINGS = 2821561663;
 const ID_OPEN_URL         = 2662437060;
 const ID_CHECK_UPDATE     = 2276698880;
 const ID_DOWNLOAD_UPDATE  = 1405235130;
+const ID_GET_CHAT_HISTORY  = 3915737321;
 
 // ---- State ----
 let currentPids = [];
@@ -22,6 +23,10 @@ let promptTargetPid = null;
 let footTimer = null;
 let sortField = 'updatedAt';
 let sortDir = 'desc';
+let chatPanelPid = null;
+let chatHistoryHash = 0;
+let chatRefreshTimer = null;
+let instanceMeta = {}; // pid → {topic, model}
 
 // ---- Boot ----
 async function boot() {
@@ -61,6 +66,11 @@ async function refresh() {
     updateClock();
     renderCards(live, stale);
     updateFooter(live, stats);
+
+    // 聊天面板打开时同步刷新消息
+    if (chatPanelPid !== null) {
+      refreshChatMessages(chatPanelPid);
+    }
   } catch (e) {
     console.error("Refresh error:", e);
     const msg = e && e.message ? e.message : String(e);
@@ -95,6 +105,14 @@ function renderCards(live, stale) {
   const container = document.getElementById("cards");
   const emptyState = document.getElementById("empty-state");
   const all = sortInstances([...live, ...stale.map(s => Object.assign({}, s, { _stale: true }))]);
+
+  // 构建实例元数据（topic/model），供聊天面板标题使用
+  const newMeta = {};
+  for (var i = 0; i < all.length; i++) {
+    var inst = all[i];
+    newMeta[inst.pid] = { topic: inst.topic || '', model: inst.model || '', status: inst.status || 'unknown' };
+  }
+  instanceMeta = newMeta;
 
   if (all.length === 0) {
     container.innerHTML = "";
@@ -360,6 +378,8 @@ function historyHTML(inst) {
   if (inst.lastTool) {
     header += ' · <span class="history-tool">🔧 ' + escHtml(inst.lastTool) + '</span>';
   }
+  header += '<span class="history-header-spacer"></span>';
+  header += '<button class="history-expand-btn" onclick="event.stopPropagation(); openChatPanel(' + inst.pid + ')" title="展开完整会话">⛶</button>';
   header += '</div>';
   var items = '';
   for (var i = 0; i < inst.history.length; i++) {
@@ -501,6 +521,367 @@ window.handleShowWin = async function(pid) {
   }
 };
 
+// ---- Chat Panel ----
+
+window.openChatPanel = async function(pid) {
+  chatPanelPid = pid;
+  chatHistoryHash = 0;
+
+  // 标题显示当前会话主题（或回退到 PID）
+  var meta = instanceMeta[pid];
+  var topic = (meta && meta.topic) ? meta.topic : ('PID ' + pid);
+  document.getElementById("chat-title").textContent = topic;
+  var modelEl = document.getElementById("chat-model");
+  if (meta && meta.model) {
+    modelEl.textContent = meta.model;
+    modelEl.style.display = "";
+  } else {
+    modelEl.style.display = "none";
+  }
+
+  document.getElementById("chat-messages").innerHTML = '<div class="chat-empty">加载中...</div>';
+  document.getElementById("chat-input").value = "";
+  document.getElementById("chat-overlay").classList.remove("hidden");
+  document.getElementById("chat-input").focus();
+
+  await refreshChatMessages(pid);
+
+  // 面板打开时启动 2 秒快速轮询（主循环 1 秒也刷新，双层保障）
+  if (chatRefreshTimer) clearInterval(chatRefreshTimer);
+  chatRefreshTimer = setInterval(function() {
+    if (chatPanelPid !== null) refreshChatMessages(chatPanelPid);
+  }, 2000);
+};
+
+window.closeChatPanel = function() {
+  document.getElementById("chat-overlay").classList.add("hidden");
+  document.getElementById("chat-waiting").classList.add("hidden");
+  document.getElementById("chat-quick-replies").classList.add("hidden");
+  chatPanelPid = null;
+  chatHistoryHash = 0;
+  if (chatRefreshTimer) { clearInterval(chatRefreshTimer); chatRefreshTimer = null; }
+};
+
+async function refreshChatMessages(pid) {
+  if (pid === null) return;
+  try {
+    var result = await Call.ByID(ID_GET_CHAT_HISTORY, pid);
+    if (!result || !result.messages) return;
+    if (result.hash === chatHistoryHash && chatHistoryHash !== 0) return;
+    chatHistoryHash = result.hash;
+    renderChatMessages(result.messages);
+  } catch (e) {
+    console.error("Chat history error:", e);
+    var msgEl = document.getElementById("chat-messages");
+    msgEl.innerHTML = '<div class="chat-empty">加载失败: ' + (e && e.message ? e.message : String(e)) + '</div>';
+  }
+}
+
+function renderChatMessages(messages) {
+  var container = document.getElementById("chat-messages");
+  var html = '';
+  for (var i = 0; i < messages.length; i++) {
+    var m = messages[i];
+    switch (m.role) {
+    case 'user':
+      html += '<div class="chat-msg chat-msg-user">'
+        + '<span class="chat-msg-label">📝 用户</span>'
+        + escHtml(m.content || '')
+        + '</div>';
+      break;
+    case 'assistant':
+      html += '<div class="chat-msg chat-msg-assistant">'
+        + '<span class="chat-msg-label">🤖 助手</span>'
+        + escHtml(m.content || '')
+        + '</div>';
+      break;
+    case 'tool_use':
+      html += '<div class="chat-msg chat-msg-tool">'
+        + '<span class="chat-msg-label">🔧 调用工具: ' + escHtml(m.tool || '') + '</span>'
+        + '<div class="chat-msg-tool-input">' + escHtml(m.content || '') + '</div>'
+        + '</div>';
+      break;
+    case 'tool_result':
+      var rt = m.content || '';
+      if (rt.length > 2000) rt = rt.slice(0, 2000) + '\n... (结果过长，已截断)';
+      html += '<div class="chat-msg chat-msg-tool-result">'
+        + '<span class="chat-msg-label">📋 工具结果' + (m.toolId ? ' (' + escHtml(m.toolId) + ')' : '') + '</span>'
+        + escHtml(rt)
+        + '</div>';
+      break;
+    }
+  }
+  if (messages.length === 0) {
+    html = '<div class="chat-empty">（暂无会话消息）</div>';
+  }
+  container.innerHTML = html;
+  // 检测交互式提示并注入快速回复按钮
+  injectInteractivePrompts(messages);
+  // 滚动到底部
+  var body = container.parentNode;
+  body.scrollTop = body.scrollHeight;
+}
+
+window.sendChatMessage = async function() {
+  if (!chatPanelPid) return;
+  var input = document.getElementById("chat-input");
+  var text = input.value.trim();
+  if (!text) return;
+
+  var btn = document.getElementById("chat-send-btn");
+  btn.disabled = true;
+  btn.textContent = "发送中...";
+
+  try {
+    await Call.ByID(ID_ACT_PROMPT, chatPanelPid, text);
+    input.value = "";
+    input.style.height = ""; // 重置 textarea 高度
+    // 乐观显示已发送的消息
+    var container = document.getElementById("chat-messages");
+    var optHTML = '<div class="chat-msg chat-msg-user">'
+      + '<span class="chat-msg-label">📝 用户（已发送）</span>'
+      + escHtml(text)
+      + '</div>';
+    container.insertAdjacentHTML("beforeend", optHTML);
+    var body = container.parentNode;
+    body.scrollTop = body.scrollHeight;
+    // 立即刷新 + 2 秒后再刷新，尽快捕获 AI 回复
+    refreshChatMessages(chatPanelPid);
+    setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
+  } catch (e) {
+    alert("发送失败: " + (e && e.message ? e.message : e));
+  }
+  btn.disabled = false;
+  btn.textContent = "发送 ⏎";
+};
+
+// ---- Interactive Chat: quick-reply & waiting indicator ----
+
+function injectInteractivePrompts(messages) {
+  var waitingEl = document.getElementById("chat-waiting");
+  var repliesEl = document.getElementById("chat-quick-replies");
+  if (!messages || messages.length === 0) {
+    waitingEl.classList.add("hidden");
+    repliesEl.classList.add("hidden");
+    return;
+  }
+
+  // 找最后一条 assistant 消息
+  var lastAssistant = null;
+  var lastAssistantIdx = -1;
+  for (var i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      lastAssistant = messages[i];
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+
+  // 检查 meta 状态：idle 表示 agent 在等待用户输入
+  var meta = instanceMeta[chatPanelPid];
+  var isIdle = meta && meta.status === 'idle';
+
+  // 无 assistant 消息 → 隐藏所有交互 UI
+  if (!lastAssistant) {
+    waitingEl.classList.add("hidden");
+    repliesEl.classList.add("hidden");
+    return;
+  }
+
+  // 分析最后一条 assistant 消息的交互模式
+  var content = lastAssistant.content || '';
+  var info = detectInteraction(content, messages, lastAssistantIdx);
+
+  // 强交互模式（计划审批/权限请求）忽略 idle 检查；弱交互模式需要 idle
+  if (!info || (!isIdle && !info.strong)) {
+    waitingEl.classList.add("hidden");
+    repliesEl.classList.add("hidden");
+    // 恢复最后一条 assistant 消息的样式
+    var msgs = document.querySelectorAll(".chat-msg-assistant");
+    if (msgs.length > 0) {
+      msgs[msgs.length - 1].classList.remove("chat-msg-interactive");
+    }
+    return;
+  }
+
+  // 显示等待状态
+  waitingEl.classList.remove("hidden");
+
+  // 高亮最后一条 assistant 消息
+  var assistantEls = document.querySelectorAll(".chat-msg-assistant");
+  if (assistantEls.length > 0) {
+    assistantEls[assistantEls.length - 1].classList.add("chat-msg-interactive");
+  }
+
+  // 生成快速回复按钮
+  var btnsHTML = '';
+  for (var j = 0; j < info.buttons.length; j++) {
+    var b = info.buttons[j];
+    var cls = b.cls || '';
+    btnsHTML += '<button class="quick-reply-btn ' + cls + '" onclick="sendQuickReply(\'' + escAttr(String(b.value)) + '\')">' + escHtml(b.label) + '</button>';
+  }
+  repliesEl.innerHTML = '<span class="chat-msg-label" style="margin-right:6px">' + escHtml(info.hint) + '</span>' + btnsHTML;
+  repliesEl.classList.remove("hidden");
+}
+
+// detectInteraction 分析 assistant 消息内容，识别交互模式并返回按钮配置。
+// 返回 null 表示无需交互。strong 表示强交互（忽略 idle 状态检查）。
+function detectInteraction(content, messages, assistantIdx) {
+  var s = content.trim();
+
+  // 0. ExitPlanMode tool_use → Claude Code 等待 plan 审批（最可靠，不依赖文本）
+  for (var k = assistantIdx; k >= 0 && k >= assistantIdx - 5; k--) {
+    var prev = messages[k];
+    if (prev.role === 'tool_use' && prev.tool === 'ExitPlanMode') {
+      return {
+        hint: '📋 Plan 审批：',
+        strong: true,
+        buttons: [
+          { label: '1. 确认执行（跳过权限）', value: '1', cls: 'primary' },
+          { label: '2. 确认执行（手动审批）', value: '2', cls: '' },
+          { label: '3. 告诉 Claude 修改', value: '3', cls: '' },
+        ]
+      };
+    }
+  }
+
+  // 1. Claude Code Plan 审批文本：「has written up a plan」「Would you like to proceed」（回退）
+  if (/has written.*plan|ready to execute|would you like to proceed|execute this plan|plan.*ready|want to proceed/i.test(s) || /^(?:>|•|\d+\.)\s*(?:Yes|No|Proceed|Continue).*(?:>|•|\d+\.)\s*(?:Yes|No|Proceed|Continue)/m.test(s)) {
+    return {
+      hint: '📋 Plan 审批：',
+      strong: true,
+      buttons: [
+        { label: '1. 确认执行（跳过权限）', value: '1', cls: 'primary' },
+        { label: '2. 确认执行（手动审批）', value: '2', cls: '' },
+        { label: '3. 告诉 Claude 修改', value: '3', cls: '' },
+      ]
+    };
+  }
+
+  // 2. 多选编号选项：「> 1. xxx」「> 2. xxx」格式（需要 > 前缀，避免匹配普通 Markdown 列表）
+  var numberedRe = /(?:^|\n)\s*>\s*\d+\.\s+\S.*(?:\n\s*>\s*\d+\.\s+\S.*)+/;
+  if (numberedRe.test(s)) {
+    // 只提取带 > 前缀的编号选项（排除普通 Markdown 编号列表）
+    var lines = s.split('\n');
+    var opts = [];
+    for (var li = 0; li < lines.length; li++) {
+      var m = lines[li].match(/>\s*(\d+)\.\s+(.+)/);
+      if (m) {
+        opts.push({ number: m[1], text: m[2].trim() });
+      }
+    }
+    if (opts.length >= 2) {
+      var btns = [];
+      for (var oi = 0; oi < opts.length; oi++) {
+        btns.push({
+          label: opts[oi].number + '. ' + opts[oi].text,
+          value: opts[oi].number,
+          cls: oi === 0 ? 'primary' : ''
+        });
+      }
+      return {
+        hint: '🔢 请选择：',
+        strong: true,
+        buttons: btns
+      };
+    }
+  }
+
+  // 3. 工具权限审批：「Allow tool」「permission to」「批准」「允许」
+  if (/Allow tool|permission to|批准|允许执行|批准执行|approve|grant permission/i.test(s)) {
+    return {
+      hint: '🔐 权限请求：',
+      strong: true,
+      buttons: [
+        { label: '✓ 批准 (y)', value: 'y', cls: 'primary' },
+        { label: '✗ 拒绝 (n)', value: 'n', cls: 'danger' },
+        { label: '✓ 总是批准 (a)', value: 'a', cls: '' },
+      ]
+    };
+  }
+
+  // 4. y/n 确认：「(y/n)」「[y/n]」「是否」「确认」—— 只匹配明确的交互标记
+  if (/\(y\/n\)|\(y\/N\)|\[y\/n\]|\[y\/N\]|是否|确认执行|确认继续|confirm\?|proceed\?|continue\?/i.test(s)) {
+    return {
+      hint: '💬 请选择：',
+      buttons: [
+        { label: '✓ 是 (y)', value: 'y', cls: 'primary' },
+        { label: '✗ 否 (n)', value: 'n', cls: 'danger' },
+      ]
+    };
+  }
+
+  // 3. AskUserQuestion 工具调用：检查最近是否有 AskUserQuestion tool_use
+  for (var k = assistantIdx - 1; k >= 0 && k >= assistantIdx - 3; k--) {
+    var prev = messages[k];
+    if (prev.role === 'tool_use' && prev.tool === 'AskUserQuestion') {
+      try {
+        var input = JSON.parse(prev.content || '{}');
+        var questions = input.questions || [];
+        if (questions.length > 0) {
+          var q = questions[0]; // 只处理第一个问题
+          var opts = q.options || [];
+          var btns = [];
+          for (var oi = 0; oi < opts.length; oi++) {
+            var opt = opts[oi];
+            btns.push({
+              label: opt.label || opt,
+              value: typeof opt === 'string' ? opt : (opt.label || ''),
+              cls: oi === 0 ? 'primary' : ''
+            });
+          }
+          if (btns.length > 0) {
+            return {
+              hint: '❓ ' + (q.question || q.header || '请选择：'),
+              buttons: btns
+            };
+          }
+        }
+      } catch (e) { /* ignore parse error */ }
+      break;
+    }
+  }
+
+  // 6. 以 ? 结尾且包含明确的确认请求 → 通用确认（弱交互，需 idle）
+  // 注意：跳过 "want me to" / "should I" 这类开放式的对话请求，它们不是二值选项。
+  if ((s.endsWith('?') || s.endsWith('？')) && /(?:shall i|ok to|okay to|ready to|agree|correct\?|right\?|makes sense|look good|look ok|sound good)/i.test(s)) {
+    return {
+      hint: '💬 回复：',
+      buttons: [
+        { label: '✓ 是 (y)', value: 'y', cls: 'primary' },
+        { label: '✗ 否 (n)', value: 'n', cls: '' },
+      ]
+    };
+  }
+
+  return null;
+}
+
+// sendQuickReply 发送快速回复（y/n 或自定义文本）。
+window.sendQuickReply = async function(text) {
+  if (!chatPanelPid) return;
+  try {
+    await Call.ByID(ID_ACT_PROMPT, chatPanelPid, text);
+    // 乐观显示
+    var container = document.getElementById("chat-messages");
+    var optHTML = '<div class="chat-msg chat-msg-user">'
+      + '<span class="chat-msg-label">📝 快速回复</span>'
+      + escHtml(text)
+      + '</div>';
+    container.insertAdjacentHTML("beforeend", optHTML);
+    var body = container.parentNode;
+    body.scrollTop = body.scrollHeight;
+    // 隐藏交互 UI
+    document.getElementById("chat-waiting").classList.add("hidden");
+    document.getElementById("chat-quick-replies").classList.add("hidden");
+    // 快速刷新
+    refreshChatMessages(chatPanelPid);
+    setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
+  } catch (e) {
+    alert("发送失败: " + (e && e.message ? e.message : e));
+  }
+};
+
 // ---- Prompt Modal ----
 window.hidePromptModal = function() {
   document.getElementById("prompt-overlay").classList.add("hidden");
@@ -524,12 +905,28 @@ window.sendPrompt = async function() {
 document.addEventListener("keydown", function(e) {
   var promptOverlay = document.getElementById("prompt-overlay");
   var settingsOverlay = document.getElementById("settings-overlay");
+  var chatOverlay = document.getElementById("chat-overlay");
 
+  // 设置：Escape 关闭
   if (!settingsOverlay.classList.contains("hidden") && e.key === "Escape") {
     hideSettings();
     return;
   }
 
+  // 聊天面板：Ctrl+Enter 发送，Escape 关闭
+  if (!chatOverlay.classList.contains("hidden")) {
+    if (e.ctrlKey && e.key === "Enter") {
+      e.preventDefault();
+      sendChatMessage();
+      return;
+    }
+    if (e.key === "Escape") {
+      closeChatPanel();
+      return;
+    }
+  }
+
+  // Prompt：Ctrl+Enter 发送，Escape 关闭
   if (promptOverlay.classList.contains("hidden")) return;
   if (e.ctrlKey && e.key === "Enter") { sendPrompt(); }
   if (e.key === "Escape") { hidePromptModal(); }
@@ -601,9 +998,24 @@ function showUpdateStatus(which) {
 
 window.checkUpdateManually = async function() {
   var btn = document.getElementById("update-check-btn");
-  // 节流：点完后 10 秒内不可再次点击
   if (btn.disabled) return;
+
+  var label = btn.textContent;
   btn.disabled = true;
+  btn.textContent = label + " (冷却 10s)";
+
+  // 倒计时显示
+  var remain = 10;
+  var timer = setInterval(function() {
+    remain--;
+    if (remain <= 0) {
+      clearInterval(timer);
+      btn.textContent = label;
+      btn.disabled = false;
+    } else {
+      btn.textContent = label + " (冷却 " + remain + "s)";
+    }
+  }, 1000);
 
   showUpdateStatus("update-checking");
   try {
@@ -626,8 +1038,6 @@ window.checkUpdateManually = async function() {
     }
     showUpdateStatus("update-error");
   }
-  // 10 秒后恢复按钮
-  setTimeout(function() { btn.disabled = false; }, 10000);
 };
 
 window.downloadUpdate = async function() {

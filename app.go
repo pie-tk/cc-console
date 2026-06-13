@@ -62,6 +62,12 @@ func runWailsApp() {
 	tray.SetIcon(trayIconBytes)
 	tray.SetTooltip("Claude Code 监控")
 
+	// 单击托盘图标 = 显示窗口
+	tray.OnClick(func() {
+		win.Show()
+		win.Focus()
+	})
+
 	menu := app.NewMenu()
 	menu.Add("显示窗口").OnClick(func(ctx *application.Context) {
 		win.Show()
