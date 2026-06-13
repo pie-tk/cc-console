@@ -1,7 +1,11 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +112,25 @@ func (s *MonitorService) ActShowWindow(pid int) error {
 	return monitor.Injector.ShowWindow(pid)
 }
 
+// GetChatHistory 返回指定 PID 实例的完整会话消息历史（含工具调用/结果）。
+func (s *MonitorService) GetChatHistory(pid int) (*monitor.ChatHistoryResult, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	sessionsDir := filepath.Join(home, ".claude", "sessions")
+	data, err := os.ReadFile(filepath.Join(sessionsDir, strconv.Itoa(pid)+".json"))
+	if err != nil {
+		return nil, fmt.Errorf("未找到 PID %d 的会话", pid)
+	}
+	var si monitor.SessionInfo
+	if json.Unmarshal(data, &si) != nil {
+		return nil, fmt.Errorf("无法解析 PID %d 的会话文件", pid)
+	}
+	result := monitor.GetChatHistory(&si)
+	return &result, nil
+}
+
 // ---- 设置 ----
 
 // SettingsResult 返回给前端的设置数据。
@@ -118,7 +141,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.2.7"
+const Version = "1.2.8"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
