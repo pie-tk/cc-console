@@ -57,4 +57,4 @@ end;
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Flags: nowait postinstall; Description: "启动 {#MyAppName}"
-Filename: "{win}\system32\cmd.exe"; Parameters: "/c del /q ""%localappdata%\Microsoft\Windows\Explorer\iconcache_*.db"" & del /q ""%localappdata%\IconCache.db"" 2>nul & taskkill /f /im explorer.exe & start explorer.exe"; Flags: runhidden
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
