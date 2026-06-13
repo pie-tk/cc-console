@@ -6,17 +6,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 清除 GOROOT 让 go 自动检测（环境变量中带引号的 GOROOT 会导致 go 找不到目录）
+unset GOROOT
+
 echo "=== 1/5 前端构建 ==="
 cd frontend && npm run build && cd ..
 
 echo ""
 echo "=== 2/5 嵌入 Windows 图标资源 ==="
-rsrc -ico icon.ico -o rsrc.syso
+# rsrc 用于将 ICO 嵌入 Windows PE 资源（桌面/任务栏图标）
+RSRC="$(go env GOPATH | tr -d '"')/bin/rsrc"
+"$RSRC" -ico icon.ico -o rsrc.syso
 
 echo ""
 echo "=== 3/5 Go 编译便携版 ==="
-# 清除 GOROOT 让 go 自动检测（环境变量中带引号的 GOROOT 会导致 go 找不到目录）
-unset GOROOT
 go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
 
 echo ""
