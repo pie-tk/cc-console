@@ -112,6 +112,16 @@ body {
   color: var(--secondary-text);
 }
 
+/* statusline 桥接接入徽标 */
+.bridge-badge {
+  font-size: 9pt;
+  color: var(--status-idle);
+  margin-left: 8px;
+  white-space: nowrap;
+}
+.bridge-badge.warn { color: #d97706; font-weight: 500; }
+body.dark .bridge-badge.warn { color: #f59e0b; }
+
 .clock {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 9pt;
@@ -199,6 +209,9 @@ body {
 .card-title { font-size: 11pt; font-weight: bold; color: var(--window-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .card-status { font-size: 9pt; font-weight: 500; }
 .card-pid-subtle { font-size: 8pt; color: var(--subtle-text); font-family: "Cascadia Code", "Consolas", monospace; }
+.card-bridge-tag { display: none; font-size: 8pt; color: #d97706; background: rgba(217,119,6,0.12); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
+.card-bridge-tag.show { display: inline; }
+body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); }
 .card-status.busy { color: var(--status-busy); animation: pulse-busy 1.6s ease-in-out infinite; }
 .card-status.idle { color: var(--status-idle); }
 .card-status.unknown { color: var(--status-unknown); }

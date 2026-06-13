@@ -20,6 +20,7 @@ type usageInfo struct {
 type convDetails struct {
 	hasFile bool
 	model   string
+	version string
 	context int64
 	output  int64
 	topic   string
@@ -49,18 +50,26 @@ func encodeProjectPath(cwd string) string {
 	return r.Replace(cwd)
 }
 
+// transcriptPathFor 返回会话 jsonl 路径:优先用 statusline 提供的官方路径(归属准确),
+// 否则回退到 cwd+sessionId 拼接(旧逻辑,无桥接时可能不准)。
+func transcriptPathFor(s *SessionInfo) string {
+	if s != nil && s.TranscriptPath != "" {
+		return s.TranscriptPath
+	}
+	if s == nil || s.SessionID == "" || s.Cwd == "" {
+		return ""
+	}
+	return filepath.Join(claudeDir(), "projects", encodeProjectPath(s.Cwd), s.SessionID+".jsonl")
+}
+
 // loadConversationDetails 从会话对应的 JSONL 中读取模型、token 用量与对话主题。
 // 按 mtime 缓存，避免每次刷新都重读大文件。
 func loadConversationDetails(s *SessionInfo) convDetails {
 	var d convDetails
-	if s == nil || s.SessionID == "" || s.Cwd == "" {
+	path := transcriptPathFor(s)
+	if path == "" {
 		return d
 	}
-	base := claudeDir()
-	if base == "" {
-		return d
-	}
-	path := filepath.Join(base, "projects", encodeProjectPath(s.Cwd), s.SessionID+".jsonl")
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -112,6 +121,7 @@ func parseConversation(data []byte, d *convDetails) {
 		switch {
 		case bytes.Contains(line, []byte(`"type":"assistant"`)):
 			var cl struct {
+				Version string `json:"version"`
 				Message struct {
 					Model   string     `json:"model"`
 					Usage   *usageInfo `json:"usage"`
@@ -123,6 +133,9 @@ func parseConversation(data []byte, d *convDetails) {
 				} `json:"message"`
 			}
 			if json.Unmarshal(line, &cl) == nil {
+				if cl.Version != "" {
+					d.version = cl.Version
+				}
 				if cl.Message.Usage != nil {
 					u := cl.Message.Usage
 					d.model = cl.Message.Model
@@ -157,6 +170,12 @@ func parseConversation(data []byte, d *convDetails) {
 				d.topic = at.AiTitle
 			}
 		case bytes.Contains(line, []byte(`"type":"user"`)):
+			var uv struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(line, &uv) == nil && uv.Version != "" {
+				d.version = uv.Version
+			}
 			t := extractUserText(line)
 			if !firstUserSet {
 				if t != "" {
@@ -248,4 +267,209 @@ func cleanConvCache() {
 			delete(convCache, path)
 		}
 	}
+	for path := range chatHistoryCache {
+		if _, err := os.Stat(path); err != nil {
+			delete(chatHistoryCache, path)
+		}
+	}
+}
+
+// ---- 聊天面板：完整消息历史解析 ----
+
+type chatHistoryCacheEntry struct {
+	mtime  int64
+	result ChatHistoryResult
+}
+
+var chatHistoryCache = map[string]chatHistoryCacheEntry{}
+
+// GetChatHistory 从 JSONL 文件中提取完整的结构化消息历史（含工具调用/结果）。
+// 使用基于 mtime 的独立缓存，避免每次轮询都重读文件。
+func GetChatHistory(s *SessionInfo) ChatHistoryResult {
+	var result ChatHistoryResult
+	path := transcriptPathFor(s)
+	if path == "" {
+		return result
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return result
+	}
+	mtime := info.ModTime().UnixNano()
+	if c, ok := chatHistoryCache[path]; ok && c.mtime == mtime {
+		return c.result
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return result
+	}
+	parseChatHistory(data, &result)
+
+	// 缓存写入
+	chatHistoryCache[path] = chatHistoryCacheEntry{mtime: mtime, result: result}
+	return result
+}
+
+// parseChatHistory 逐行解析 JSONL，提取所有 content block（text / tool_use / tool_result）。
+func parseChatHistory(data []byte, r *ChatHistoryResult) {
+	turn := 0
+	var msgs []ChatMessage
+
+	for _, raw := range bytes.Split(data, []byte("\n")) {
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 {
+			continue
+		}
+
+		switch {
+		case bytes.Contains(line, []byte(`"type":"assistant"`)):
+			var al struct {
+				Message struct {
+					Content []struct {
+						Type  string          `json:"type"`
+						Text  string          `json:"text"`
+						Name  string          `json:"name"`
+						ID    string          `json:"id"`
+						Input json.RawMessage `json:"input"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &al) == nil {
+				for _, b := range al.Message.Content {
+					switch b.Type {
+					case "text":
+						if b.Text != "" {
+							msgs = append(msgs, ChatMessage{Role: "assistant", Content: b.Text, Turn: turn})
+						}
+					case "tool_use":
+						input := string(b.Input)
+						msgs = append(msgs, ChatMessage{
+							Role:    "tool_use",
+							Content: input,
+							Tool:    b.Name,
+							ToolID:  b.ID,
+							Turn:    turn,
+						})
+					}
+				}
+			}
+
+		case bytes.Contains(line, []byte(`"type":"user"`)):
+			var ul struct {
+				Message struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &ul) != nil {
+				continue
+			}
+			blocks := parseContentBlocks(ul.Message.Content)
+			for _, b := range blocks {
+				switch {
+				case b.text != "":
+					turn++
+					msgs = append(msgs, ChatMessage{Role: "user", Content: b.text, Turn: turn})
+				case b.toolUseID != "":
+					msgs = append(msgs, ChatMessage{
+						Role:    "tool_result",
+						Content: b.content,
+						ToolID:  b.toolUseID,
+						Turn:    turn,
+					})
+				}
+			}
+		}
+	}
+
+	// 最多保留 500 条
+	if len(msgs) > 500 {
+		msgs = msgs[len(msgs)-500:]
+	}
+
+	r.Messages = msgs
+	for _, m := range msgs {
+		r.Hash += len(m.Content)*31 + len(m.Tool)*17 + len(m.ToolID)*13
+	}
+}
+
+// contentBlock 是 user 消息中的单个 content 块（text 或 tool_result）。
+type contentBlock struct {
+	text      string
+	toolUseID string
+	content   string // tool_result 的实际内容
+}
+
+// parseContentBlocks 解析 user 消息的 content（可能是字符串或数组）。
+func parseContentBlocks(raw json.RawMessage) []contentBlock {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
+	}
+
+	// content 是字符串（纯文本 user 消息）
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil && s != "" {
+			return []contentBlock{{text: s}}
+		}
+		return nil
+	}
+
+	// content 是数组
+	var items []struct {
+		Type      string          `json:"type"`
+		Text      string          `json:"text"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &items) != nil {
+		return nil
+	}
+
+	var blocks []contentBlock
+	for _, item := range items {
+		switch item.Type {
+		case "text":
+			if item.Text != "" {
+				blocks = append(blocks, contentBlock{text: item.Text})
+			}
+		case "tool_result":
+			content := extractToolResultContent(item.Content)
+			blocks = append(blocks, contentBlock{
+				toolUseID: item.ToolUseID,
+				content:   content,
+			})
+		}
+	}
+	return blocks
+}
+
+// extractToolResultContent 从 tool_result 的 content 字段提取文本。
+// content 可能是字符串或 text 块数组。
+func extractToolResultContent(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		json.Unmarshal(raw, &s)
+		return s
+	}
+	var items []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &items) == nil {
+		var parts []string
+		for _, it := range items {
+			if it.Type == "text" && it.Text != "" {
+				parts = append(parts, it.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return string(raw)
 }

@@ -1,11 +1,7 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +48,12 @@ func (s *MonitorService) DetectInstances() (*DetectResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	offline := 0
+	for _, inst := range live {
+		if !inst.Live {
+			offline++
+		}
+	}
 	return &DetectResult{
 		Live:  live,
 		Stale: stale,
@@ -60,6 +62,7 @@ func (s *MonitorService) DetectInstances() (*DetectResult, error) {
 			Busy:    monitor.CountStatus(live, "busy"),
 			Idle:    monitor.CountStatus(live, "idle"),
 			Stale:   len(stale),
+			Offline: offline,
 			TotalTokens: monitor.TotalTokens(live),
 		},
 	}, nil
@@ -114,21 +117,55 @@ func (s *MonitorService) ActShowWindow(pid int) error {
 
 // GetChatHistory 返回指定 PID 实例的完整会话消息历史（含工具调用/结果）。
 func (s *MonitorService) GetChatHistory(pid int) (*monitor.ChatHistoryResult, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
+	si, ok := monitor.GetCachedSession(pid)
+	if !ok {
+		return nil, fmt.Errorf("未找到 PID %d 的会话（实例可能已退出）", pid)
 	}
-	sessionsDir := filepath.Join(home, ".claude", "sessions")
-	data, err := os.ReadFile(filepath.Join(sessionsDir, strconv.Itoa(pid)+".json"))
-	if err != nil {
-		return nil, fmt.Errorf("未找到 PID %d 的会话", pid)
-	}
-	var si monitor.SessionInfo
-	if json.Unmarshal(data, &si) != nil {
-		return nil, fmt.Errorf("无法解析 PID %d 的会话文件", pid)
-	}
-	result := monitor.GetChatHistory(&si)
+	result := monitor.GetChatHistory(si)
 	return &result, nil
+}
+
+// ---- statusline 桥接 ----
+
+// BridgeInfo 返回 statusline 桥接的配置状态 + 当前实时接入比例。
+type BridgeInfo struct {
+	monitor.BridgeStatus
+	HookedCount int `json:"hookedCount"` // 有新鲜 live 文件的实例数(实时接入)
+	Total       int `json:"total"`       // 在线实例总数
+}
+
+// GetBridgeStatus 返回桥接状态及当前接入比例。
+func (s *MonitorService) GetBridgeStatus() (*BridgeInfo, error) {
+	st := monitor.GetBridgeStatus()
+	live, _, _ := monitor.Detect()
+	hooked := 0
+	for _, inst := range live {
+		if inst.Live {
+			hooked++
+		}
+	}
+	return &BridgeInfo{BridgeStatus: st, HookedCount: hooked, Total: len(live)}, nil
+}
+
+// EnableBridge 启用桥接:保存设置并写入 ~/.claude/settings.json。
+func (s *MonitorService) EnableBridge() error {
+	cfg := monitor.GetSettings()
+	cfg.BridgeEnabled = true
+	if err := monitor.SaveSettings(cfg); err != nil {
+		return err
+	}
+	_, err := monitor.EnsureBridge()
+	return err
+}
+
+// DisableBridge 禁用桥接:还原 settings.json 并保存设置。
+func (s *MonitorService) DisableBridge() error {
+	cfg := monitor.GetSettings()
+	cfg.BridgeEnabled = false
+	if err := monitor.SaveSettings(cfg); err != nil {
+		return err
+	}
+	return monitor.DisableBridge()
 }
 
 // ---- 设置 ----
@@ -141,7 +178,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.2.8"
+const Version = "1.3.0"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {

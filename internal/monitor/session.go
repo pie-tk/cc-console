@@ -17,12 +17,15 @@ type SessionInfo struct {
 	ProcStart  string `json:"procStart"`
 	Version    string `json:"version"`
 	Kind       string `json:"kind"`
-	Entrypoint string `json:"entrypoint"`
-	Status     string `json:"status"`    // busy / idle / ...
-	UpdatedAt  int64  `json:"updatedAt"` // epoch 毫秒
+	Entrypoint     string `json:"entrypoint"`
+	Status         string `json:"status"`         // busy / idle / ...
+	UpdatedAt      int64  `json:"updatedAt"`      // epoch 毫秒
+	TranscriptPath string `json:"transcriptPath"` // 当前会话 jsonl 官方路径（来自 statusline，优先于 cwd+sessionId 拼接）
 }
 
-// loadSessions 读取 ~/.claude/sessions/*.json，返回按 PID 索引的会话映射。
+// loadSessions 读取 ~/.claude/sessions/*.json（旧版 Claude Code 的实例文件）。
+// 自 Claude Code 2.1.177 起该文件不再生成；Detect() 已改为进程枚举驱动，不再调用本函数。
+// 保留仅供旧版兼容参考。
 func loadSessions(sessionsDir string) map[int]*SessionInfo {
 	m := map[int]*SessionInfo{}
 	entries, err := os.ReadDir(sessionsDir)

@@ -8,9 +8,10 @@ import (
 
 // Settings 持久化到 ~/.claude-monitor.json 的应用设置。
 type Settings struct {
-	ModelLimits map[string]int64 `json:"modelLimits"`
-	CloseQuits  bool             `json:"closeQuits"`
-	AutoStart   bool             `json:"autoStart"`
+	ModelLimits   map[string]int64 `json:"modelLimits"`
+	CloseQuits    bool             `json:"closeQuits"`
+	AutoStart     bool             `json:"autoStart"`
+	BridgeEnabled bool             `json:"bridgeEnabled"` // statusline 桥接（默认启用）
 }
 
 var currentSettings Settings
@@ -26,7 +27,8 @@ func configPath() (string, error) {
 // LoadSettings 从磁盘加载设置，首次运行返回默认值。
 func LoadSettings() error {
 	currentSettings = Settings{
-		ModelLimits: map[string]int64{},
+		ModelLimits:   map[string]int64{},
+		BridgeEnabled: true, // 默认启用 statusline 桥接
 	}
 	path, err := configPath()
 	if err != nil {

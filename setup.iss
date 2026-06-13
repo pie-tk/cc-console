@@ -50,6 +50,8 @@ Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Sho
 
 [Files]
 Source: "claude-monitor.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "claude-monitor-sl.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "bridge.mjs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
@@ -70,6 +72,18 @@ begin
 
   // 短暂等待文件解锁
   Sleep(500);
+end;
+
+// 卸载时还原 ~/.claude/settings.json 的 statusLine(主 exe 此时仍在,由它执行还原)
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    Exec(ExpandConstant('{app}\{#MyAppExe}'), '--restore-statusline', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 [Run]

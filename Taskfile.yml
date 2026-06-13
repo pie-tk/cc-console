@@ -14,6 +14,8 @@ tasks:
     cmds:
       - cd frontend && npm run build
       - go build -ldflags="-H windowsgui -s -w" -o {{.APP_NAME}}.exe .
+      - go build -ldflags="-s -w" -o {{.APP_NAME}}-sl.exe ./cmd/slhook
+      - cp cmd/slhook/bridge.mjs bridge.mjs
       - task: setup
 
   setup:

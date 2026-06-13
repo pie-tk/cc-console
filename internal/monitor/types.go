@@ -16,6 +16,12 @@ type Instance struct {
 	OutputTokens    int64  `json:"outputTokens"`
 	Topic           string `json:"topic"`
 	ContextLimit    int64  `json:"contextLimit"` // 模型上下文上限（0 表示未知）
+	ContextPercent  int     `json:"contextPercent"`  // 上下文占用百分比（statusline 原生 used_percentage）
+	CostUsd         float64 `json:"costUsd"`         // 会话累计费用 USD（statusline cost）
+	DurationMs      int64   `json:"durationMs"`      // 会话时长 ms（statusline cost）
+	BridgeConnected bool    `json:"bridgeConnected"` // statusline 桥接是否对该实例生效
+	Live            bool   `json:"live"`            // 是否有新鲜的 live 数据（实时反映）
+	TranscriptPath  string `json:"-"`               // 当前会话 jsonl 官方路径（来自 statusline，内部用）
 	// 累计 token（整个会话所有 assistant 消息求和）
 	TotalInputTokens  int64 `json:"totalInputTokens"`
 	TotalOutputTokens int64 `json:"totalOutputTokens"`
@@ -36,11 +42,28 @@ type HistoryTurn struct {
 	ReplySnip string `json:"r"` // 助手回复片段，截断至 120 runes
 }
 
+// ChatMessage 表示会话历史中的一条完整消息（用于聊天面板）。
+// 与 HistoryTurn 不同，ChatMessage 按时间顺序包含每个 content block。
+type ChatMessage struct {
+	Role    string `json:"role"`             // "user" | "assistant" | "tool_use" | "tool_result"
+	Content string `json:"content"`          // 显示文本（tool_use 时为 JSON input）
+	Tool    string `json:"tool,omitempty"`   // 工具名（tool_use / tool_result 时）
+	ToolID  string `json:"toolId,omitempty"` // tool_use_id（用于配对）
+	Turn    int    `json:"turn"`             // 轮次号（1-based），tool_result 与前一 user 同轮次
+}
+
+// ChatHistoryResult 是 GetChatHistory 的返回结构。
+type ChatHistoryResult struct {
+	Messages []ChatMessage `json:"messages"`
+	Hash     int           `json:"hash"` // 前端用于增量更新判断
+}
+
 // StatsInfo 统计信息，供前端使用。
 type StatsInfo struct {
 	Online     int   `json:"online"`
 	Busy       int   `json:"busy"`
 	Idle       int   `json:"idle"`
 	Stale      int   `json:"stale"`
+	Offline    int   `json:"offline"`      // 未接入 statusline 桥接的实例数
 	TotalTokens int64 `json:"totalTokens"` // 所有实例累计 tokens
 }

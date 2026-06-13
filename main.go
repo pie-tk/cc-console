@@ -18,10 +18,25 @@ var trayIconBytes []byte
 func main() {
 	monitor.LoadConfig()
 
+	// statusline 桥接:确保 ~/.claude/settings.json 指向 slhook,以获取活跃会话的实时数据。
+	// 失败不阻断启动(前端会显示"桥接未生效"提示)。
+	if monitor.GetSettings().BridgeEnabled {
+		if _, err := monitor.EnsureBridge(); err != nil {
+			fmt.Fprintln(os.Stderr, "statusline 桥接初始化失败:", err)
+		}
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--list", "-l", "list":
 			runList()
+			return
+		case "--restore-statusline":
+			// 卸载时调用:把 ~/.claude/settings.json 的 statusLine 还原为桥接前的原命令
+			if err := monitor.DisableBridge(); err != nil {
+				fmt.Fprintln(os.Stderr, "还原 statusLine 失败:", err)
+				os.Exit(1)
+			}
 			return
 		case "-h", "--help", "help":
 			fmt.Println("claude-monitor              启动 GUI 监控窗口（系统托盘常驻，每 1 秒刷新）")
@@ -62,9 +77,13 @@ func runList() {
 		if len([]rune(topic)) > 26 {
 			topic = monitor.TruncateRunes(topic, 25)
 		}
-		fmt.Printf("%-7d  %-8s  %-12s  %-16s  %-8s  %-26s  %s\n",
+		bridgeTag := ""
+		if !it.BridgeConnected {
+			bridgeTag = "  [未接入]"
+		}
+		fmt.Printf("%-7d  %-8s  %-12s  %-16s  %-8s  %-26s  %s%s\n",
 			it.Pid, monitor.StatusText(it.Status), monitor.ModelDisplay(it),
-			monitor.ContextDisplayPlain(it), monitor.OutputDisplay(it), topic, cwd)
+			monitor.ContextDisplayPlain(it), monitor.OutputDisplay(it), topic, cwd, bridgeTag)
 	}
 	fmt.Println()
 	fmt.Printf("合计 Context: %s", monitor.FormatTokens(monitor.TotalContext(live)))

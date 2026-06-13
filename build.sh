@@ -23,6 +23,11 @@ echo "=== 3/5 Go 编译便携版 ==="
 go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
 
 echo ""
+echo "=== 3b/5 编译 statusline 桥接 helper ==="
+go build -ldflags="-s -w" -o claude-monitor-sl.exe ./cmd/slhook
+cp cmd/slhook/bridge.mjs bridge.mjs
+
+echo ""
 echo "=== 4/5 获取版本号 ==="
 VERSION=$(grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/\1/')
 echo "Version: $VERSION"
@@ -33,4 +38,4 @@ powershell -Command "& 'C:\Users\PIE TK\AppData\Local\Programs\Inno Setup 6\ISCC
 
 echo ""
 echo "=== 完成 ==="
-ls -lh claude-monitor.exe claude-monitor-setup.exe
+ls -lh claude-monitor.exe claude-monitor-sl.exe claude-monitor-setup.exe

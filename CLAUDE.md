@@ -39,15 +39,16 @@
 
 ## 构建
 
-本地调试保留便携版 exe，发布仅用安装包。
+**任何修改后都必须同时构建便携版 exe 和安装包**，确保两个产物都是最新的。
 
 ```bash
-# 编译便携版（调试用）
-cd frontend && npm run build && cd ..
-go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
+# 一键构建（推荐）— 便携版 exe + 安装包
+./build.sh
 
-# 生成 Inno Setup 安装包（发布用）
-powershell -Command "& '$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe' /DMyAppVersion=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\(.*\)\".*/\1/') setup.iss"
+# 或分步手动执行：
+# 1. cd frontend && npm run build && cd ..
+# 2. go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
+# 3. powershell -Command "& 'C:\Users\PIE TK\AppData\Local\Programs\Inno Setup 6\ISCC.exe' /DMyAppVersion=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\(.*\)\".*/\1/') setup.iss"
 
 # 或使用 Taskfile
 task build

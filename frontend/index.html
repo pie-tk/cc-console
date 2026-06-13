@@ -18,6 +18,7 @@
       <div class="spacer-8"></div>
       <div class="stats-row">
         <span id="stats" class="stats-text">正在检测...</span>
+        <span id="bridge-badge" class="bridge-badge"></span>
         <span class="flex-spacer"></span>
         <span id="clock" class="clock"></span>
         <button id="settings-btn" class="settings-btn" title="设置" onclick="showSettings()">&#x2699;</button>
@@ -62,6 +63,33 @@
       <div class="modal-buttons">
         <button id="prompt-cancel" class="btn btn-cancel" onclick="hidePromptModal()">取消</button>
         <button id="prompt-send" class="btn btn-send" onclick="sendPrompt()">发送  ⏎</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 会话聊天面板 -->
+  <div id="chat-overlay" class="modal-overlay hidden" onclick="if(event.target===this) closeChatPanel()">
+    <div class="chat-dialog">
+      <div class="chat-header">
+        <span class="chat-emoji">💬</span>
+        <span class="chat-title" id="chat-title">会话</span>
+        <span class="chat-model" id="chat-model"></span>
+        <span class="flex-spacer"></span>
+        <button class="chat-close-btn" onclick="closeChatPanel()" title="关闭">✕</button>
+      </div>
+      <div class="chat-body">
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-empty">加载中...</div>
+        </div>
+      </div>
+      <div id="chat-waiting" class="chat-waiting hidden">
+        <span class="chat-waiting-dot"></span>
+        <span>等待你的选择...</span>
+      </div>
+      <div id="chat-quick-replies" class="chat-quick-replies hidden"></div>
+      <div class="chat-input-area">
+        <textarea id="chat-input" class="chat-input" placeholder="输入消息，Ctrl+Enter 发送，Enter 换行..." rows="3" maxlength="4000"></textarea>
+        <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
       </div>
     </div>
   </div>

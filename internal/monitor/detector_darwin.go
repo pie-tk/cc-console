@@ -7,4 +7,7 @@ func init() {
 	isProcessAlive = func(pid int, startedAt int64) bool {
 		return false
 	}
+	// TODO: 实现 macOS claude 进程枚举（ps / libproc）+ 工作目录（proc_pidinfo）
+	enumerateClaude = func() []claudeProc { return nil }
+	procCwd = func(pid int) string { return "" }
 }

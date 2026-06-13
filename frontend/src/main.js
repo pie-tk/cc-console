@@ -82,14 +82,27 @@ async function refresh() {
 // ---- Stats ----
 function updateStats(stats) {
   const el = document.getElementById("stats");
+  const badge = document.getElementById("bridge-badge");
   if (!stats || stats.online === 0) {
     el.textContent = "🌙  当前无实例运行";
+    if (badge) badge.textContent = "";
     return;
   }
   const parts = ["在线 " + stats.online, "🔴 " + stats.busy + " 忙碌", "🟢 " + stats.idle + " 空闲"];
   if (stats.totalTokens > 0) parts.push("📦 " + formatTokens(stats.totalTokens) + " tokens");
   if (stats.stale > 0) parts.push("🌓 " + stats.stale + " 残留");
   el.textContent = parts.join("  ·  ");
+  // statusline 桥接接入徽标:让用户看到实时数据接入比例
+  if (badge) {
+    var hooked = stats.online - (stats.offline || 0);
+    if ((stats.offline || 0) > 0) {
+      badge.textContent = "📡 实时 " + hooked + "/" + stats.online + " · " + stats.offline + " 待接入";
+      badge.className = "bridge-badge warn";
+    } else {
+      badge.textContent = "📡 实时接入 " + hooked + "/" + stats.online;
+      badge.className = "bridge-badge";
+    }
+  }
 }
 
 function updateClock() {
@@ -211,6 +224,7 @@ function cardHTML(inst) {
     + '<span class="card-emoji">' + emoji + '</span>'
     + '<span class="card-title" data-field="title" title="' + escAttr(cwd) + '">' + escHtml(title) + '</span>'
     + '<span class="card-status ' + statusClass + '" data-field="status">' + label + '</span>'
+    + '<span class="card-bridge-tag' + (inst.bridgeConnected ? '' : ' show') + '" data-field="bridge" title="statusline 桥接尚未生效，实时数据待接入（新会话刷新后自动接入）">⏳ 未接入</span>'
     + '<span class="card-pid-subtle">PID ' + inst.pid + '</span>'
     + '<span class="card-model" data-field="model">' + model + '</span>'
     + '<span class="card-duration" data-field="duration">' + humanDuration(inst.startedAt) + '</span>'
@@ -300,6 +314,8 @@ function updateCardText(el, inst) {
   var barEl = el.querySelector(".context-bar");
   if (barEl) barEl.className = "context-bar " + contextBarClass(inst);
   set(".card-emoji", statusEmoji(inst.status));
+  var bridgeEl = el.querySelector("[data-field=bridge]");
+  if (bridgeEl) bridgeEl.classList.toggle("show", !inst.bridgeConnected);
 }
 
 // ---- Escape helpers ----
@@ -337,6 +353,13 @@ function outputDisplay(inst) {
 }
 
 function totalTokensDisplay(inst) {
+  // 桥接实时实例:显示费用/时长(活跃会话 jsonl 未落盘,用 statusline cost)
+  if (inst.bridgeConnected) {
+    var parts = [];
+    if (inst.costUsd > 0) parts.push("$" + inst.costUsd.toFixed(2));
+    if (inst.durationMs > 0) parts.push(formatDuration(inst.durationMs));
+    if (parts.length) return parts.join(" · ");
+  }
   if (!inst.hasConversation) return "";
   var tin = inst.totalInputTokens || 0;
   var tout = inst.totalOutputTokens || 0;
@@ -369,8 +392,9 @@ function lastQueryTitle(inst) {
 function historyHTML(inst) {
   if (!inst.hasConversation) return "";
   if (!inst.history || inst.history.length === 0) {
+    var msg = inst.bridgeConnected ? '📡 实时接入中 · 完整对话记录在会话结束后归档' : '（暂无对话记录）';
     return '<div class="card-history card-history-empty">'
-      + '<span class="history-empty-msg">（暂无对话记录）</span>'
+      + '<span class="history-empty-msg">' + msg + '</span>'
       + '</div>';
   }
   var header = '<div class="history-header">'
@@ -443,6 +467,15 @@ function formatTokens(n) {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(1) + "k";
   return String(n);
+}
+
+function formatDuration(ms) {
+  if (!ms || ms <= 0) return "—";
+  var s = Math.floor(ms / 1000);
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + " 分";
+  var h = Math.floor(m / 60);
+  return h + " 小时 " + (m % 60) + " 分";
 }
 
 function humanDuration(fromMs) {
@@ -666,41 +699,20 @@ function injectInteractivePrompts(messages) {
     return;
   }
 
-  // 找最后一条 assistant 消息
-  var lastAssistant = null;
-  var lastAssistantIdx = -1;
-  for (var i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') {
-      lastAssistant = messages[i];
-      lastAssistantIdx = i;
-      break;
-    }
-  }
-
-  // 检查 meta 状态：idle 表示 agent 在等待用户输入
+  // 检查 meta 状态:idle 表示 agent 在等待用户输入
   var meta = instanceMeta[chatPanelPid];
   var isIdle = meta && meta.status === 'idle';
 
-  // 无 assistant 消息 → 隐藏所有交互 UI
-  if (!lastAssistant) {
+  // 结构化判定:Claude Code 是否有挂起的 tool_use(等待用户选择)。
+  // 只认 tool 层的真实选择场景(ExitPlanMode / AskUserQuestion / 权限请求),
+  // 不看 assistant 文本——Claude Code 的选择 UI 由主程序渲染,不会出现在 text 里。
+  var info = detectInteraction(messages);
+
+  // busy 时 tool_use 无 result 多半是结果尚未落盘(工具执行中),而非权限等待;
+  // 只有 idle 才是真正的选择暂停点。
+  if (!info || !isIdle) {
     waitingEl.classList.add("hidden");
     repliesEl.classList.add("hidden");
-    return;
-  }
-
-  // 分析最后一条 assistant 消息的交互模式
-  var content = lastAssistant.content || '';
-  var info = detectInteraction(content, messages, lastAssistantIdx);
-
-  // 强交互模式（计划审批/权限请求）忽略 idle 检查；弱交互模式需要 idle
-  if (!info || (!isIdle && !info.strong)) {
-    waitingEl.classList.add("hidden");
-    repliesEl.classList.add("hidden");
-    // 恢复最后一条 assistant 消息的样式
-    var msgs = document.querySelectorAll(".chat-msg-assistant");
-    if (msgs.length > 0) {
-      msgs[msgs.length - 1].classList.remove("chat-msg-interactive");
-    }
     return;
   }
 
@@ -724,137 +736,85 @@ function injectInteractivePrompts(messages) {
   repliesEl.classList.remove("hidden");
 }
 
-// detectInteraction 分析 assistant 消息内容，识别交互模式并返回按钮配置。
-// 返回 null 表示无需交互。strong 表示强交互（忽略 idle 状态检查）。
-function detectInteraction(content, messages, assistantIdx) {
-  var s = content.trim();
-
-  // 0. ExitPlanMode tool_use → Claude Code 等待 plan 审批（最可靠，不依赖文本）
-  for (var k = assistantIdx; k >= 0 && k >= assistantIdx - 5; k--) {
-    var prev = messages[k];
-    if (prev.role === 'tool_use' && prev.tool === 'ExitPlanMode') {
-      return {
-        hint: '📋 Plan 审批：',
-        strong: true,
-        buttons: [
-          { label: '1. 确认执行（跳过权限）', value: '1', cls: 'primary' },
-          { label: '2. 确认执行（手动审批）', value: '2', cls: '' },
-          { label: '3. 告诉 Claude 修改', value: '3', cls: '' },
-        ]
-      };
-    }
-  }
-
-  // 1. Claude Code Plan 审批文本：「has written up a plan」「Would you like to proceed」（回退）
-  if (/has written.*plan|ready to execute|would you like to proceed|execute this plan|plan.*ready|want to proceed/i.test(s) || /^(?:>|•|\d+\.)\s*(?:Yes|No|Proceed|Continue).*(?:>|•|\d+\.)\s*(?:Yes|No|Proceed|Continue)/m.test(s)) {
-    return {
-      hint: '📋 Plan 审批：',
-      strong: true,
-      buttons: [
-        { label: '1. 确认执行（跳过权限）', value: '1', cls: 'primary' },
-        { label: '2. 确认执行（手动审批）', value: '2', cls: '' },
-        { label: '3. 告诉 Claude 修改', value: '3', cls: '' },
-      ]
-    };
-  }
-
-  // 2. 多选编号选项：「> 1. xxx」「> 2. xxx」格式（需要 > 前缀，避免匹配普通 Markdown 列表）
-  var numberedRe = /(?:^|\n)\s*>\s*\d+\.\s+\S.*(?:\n\s*>\s*\d+\.\s+\S.*)+/;
-  if (numberedRe.test(s)) {
-    // 只提取带 > 前缀的编号选项（排除普通 Markdown 编号列表）
-    var lines = s.split('\n');
-    var opts = [];
-    for (var li = 0; li < lines.length; li++) {
-      var m = lines[li].match(/>\s*(\d+)\.\s+(.+)/);
-      if (m) {
-        opts.push({ number: m[1], text: m[2].trim() });
-      }
-    }
-    if (opts.length >= 2) {
-      var btns = [];
-      for (var oi = 0; oi < opts.length; oi++) {
-        btns.push({
-          label: opts[oi].number + '. ' + opts[oi].text,
-          value: opts[oi].number,
-          cls: oi === 0 ? 'primary' : ''
-        });
-      }
-      return {
-        hint: '🔢 请选择：',
-        strong: true,
-        buttons: btns
-      };
-    }
-  }
-
-  // 3. 工具权限审批：「Allow tool」「permission to」「批准」「允许」
-  if (/Allow tool|permission to|批准|允许执行|批准执行|approve|grant permission/i.test(s)) {
-    return {
-      hint: '🔐 权限请求：',
-      strong: true,
-      buttons: [
-        { label: '✓ 批准 (y)', value: 'y', cls: 'primary' },
-        { label: '✗ 拒绝 (n)', value: 'n', cls: 'danger' },
-        { label: '✓ 总是批准 (a)', value: 'a', cls: '' },
-      ]
-    };
-  }
-
-  // 4. y/n 确认：「(y/n)」「[y/n]」「是否」「确认」—— 只匹配明确的交互标记
-  if (/\(y\/n\)|\(y\/N\)|\[y\/n\]|\[y\/N\]|是否|确认执行|确认继续|confirm\?|proceed\?|continue\?/i.test(s)) {
-    return {
-      hint: '💬 请选择：',
-      buttons: [
-        { label: '✓ 是 (y)', value: 'y', cls: 'primary' },
-        { label: '✗ 否 (n)', value: 'n', cls: 'danger' },
-      ]
-    };
-  }
-
-  // 3. AskUserQuestion 工具调用：检查最近是否有 AskUserQuestion tool_use
-  for (var k = assistantIdx - 1; k >= 0 && k >= assistantIdx - 3; k--) {
-    var prev = messages[k];
-    if (prev.role === 'tool_use' && prev.tool === 'AskUserQuestion') {
-      try {
-        var input = JSON.parse(prev.content || '{}');
-        var questions = input.questions || [];
-        if (questions.length > 0) {
-          var q = questions[0]; // 只处理第一个问题
-          var opts = q.options || [];
-          var btns = [];
-          for (var oi = 0; oi < opts.length; oi++) {
-            var opt = opts[oi];
-            btns.push({
-              label: opt.label || opt,
-              value: typeof opt === 'string' ? opt : (opt.label || ''),
-              cls: oi === 0 ? 'primary' : ''
-            });
-          }
-          if (btns.length > 0) {
-            return {
-              hint: '❓ ' + (q.question || q.header || '请选择：'),
-              buttons: btns
-            };
-          }
-        }
-      } catch (e) { /* ignore parse error */ }
+// detectInteraction 基于 messages 结构判定 Claude Code 当前的交互暂停点。
+// 只识别 tool 层的真实选择场景——Claude Code 的选择 UI 由主程序在 tool 执行前渲染,
+// 永远不会出现在 assistant 的 text 里,因此完全不看文本内容,杜绝「是否」「(y/n)」之类的误判。
+// 返回 null 表示无挂起交互。
+//
+// 判定依据:最后一个 tool_use 是否「已配对到 tool_result」。
+//   - 未配对(挂起) → Claude 正在等用户就这个工具做选择,按工具名分流:
+//       ExitPlanMode    → Plan 审批
+//       AskUserQuestion → 问题选项(取自 tool input)
+//       其他工具        → 权限请求(等 yes/no)
+//   - 已配对(工具执行完毕) → 返回 null
+function detectInteraction(messages) {
+  // 从末尾找最后一个 tool_use
+  var lastToolUseIdx = -1;
+  for (var i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'tool_use') {
+      lastToolUseIdx = i;
       break;
     }
   }
+  if (lastToolUseIdx === -1) return null;
 
-  // 6. 以 ? 结尾且包含明确的确认请求 → 通用确认（弱交互，需 idle）
-  // 注意：跳过 "want me to" / "should I" 这类开放式的对话请求，它们不是二值选项。
-  if ((s.endsWith('?') || s.endsWith('？')) && /(?:shall i|ok to|okay to|ready to|agree|correct\?|right\?|makes sense|look good|look ok|sound good)/i.test(s)) {
+  var lastToolUse = messages[lastToolUseIdx];
+
+  // 该 tool_use 是否已有对应的 tool_result(用 toolId 配对)
+  if (lastToolUse.toolId) {
+    for (var j = lastToolUseIdx + 1; j < messages.length; j++) {
+      if (messages[j].role === 'tool_result' && messages[j].toolId === lastToolUse.toolId) {
+        return null; // 已执行完毕,无挂起
+      }
+    }
+  }
+
+  // 挂起的 tool_use,按工具名分流到对应选择场景
+  if (lastToolUse.tool === 'ExitPlanMode') {
     return {
-      hint: '💬 回复：',
+      hint: '📋 Plan 审批：',
       buttons: [
-        { label: '✓ 是 (y)', value: 'y', cls: 'primary' },
-        { label: '✗ 否 (n)', value: 'n', cls: '' },
+        { label: '1. 开始执行', value: '1', cls: 'primary' },
+        { label: '2. 执行(不再询问)', value: '2', cls: '' },
+        { label: '3. 修改计划', value: '3', cls: '' },
       ]
     };
   }
 
-  return null;
+  if (lastToolUse.tool === 'AskUserQuestion') {
+    try {
+      var input = JSON.parse(lastToolUse.content || '{}');
+      var questions = input.questions || [];
+      if (questions.length > 0) {
+        var q = questions[0];
+        var opts = q.options || [];
+        var btns = [];
+        for (var oi = 0; oi < opts.length; oi++) {
+          var opt = opts[oi];
+          btns.push({
+            label: opt.label || opt,
+            value: typeof opt === 'string' ? opt : (opt.label || ''),
+            cls: oi === 0 ? 'primary' : ''
+          });
+        }
+        if (btns.length > 0) {
+          return {
+            hint: '❓ ' + (q.question || q.header || '请选择：'),
+            buttons: btns
+          };
+        }
+      }
+    } catch (e) { /* 解析失败则落到下方通用权限/选择处理 */ }
+  }
+
+  // 其他 tool_use 挂起 → 工具权限请求(Claude Code 在等用户允许/拒绝)
+  return {
+    hint: '🔐 权限请求（' + (lastToolUse.tool || '工具') + '）：',
+    buttons: [
+      { label: '✓ 允许 (y)', value: 'y', cls: 'primary' },
+      { label: '✗ 拒绝 (n)', value: 'n', cls: 'danger' },
+    ]
+  };
 }
 
 // sendQuickReply 发送快速回复（y/n 或自定义文本）。

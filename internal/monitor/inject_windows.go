@@ -40,6 +40,7 @@ var (
 	procGetCurrentThreadId     = kernel32.NewProc("GetCurrentThreadId")
 	procGetWindowTextLengthW   = user32DLL.NewProc("GetWindowTextLengthW")
 	procAllowSetForegroundWindow = user32DLL.NewProc("AllowSetForegroundWindow")
+	procGetClassNameW           = user32DLL.NewProc("GetClassNameW")
 	procBringWindowToTop       = user32DLL.NewProc("BringWindowToTop")
 	procGetCurrentProcessId     = kernel32.NewProc("GetCurrentProcessId")
 )
@@ -179,17 +180,16 @@ func (w *windowsInjector) ShowWindow(pid int) error {
 		r, _, _ = procGetConsoleWindow.Call()
 		hwnd := uintptr(r)
 		if hwnd != 0 {
-			// ConPTY 下 GetConsoleWindow 返回 shell（cmd/powershell）的终端面板窗口，
-			// SetForegroundWindow 对其无效，需识别后跳过，交给路径 2 处理。
-			if !isConsoleWindowShell(hwnd) {
-				if ro, _, _ := procGetAncestor.Call(hwnd, 3); ro != 0 {
-					hwnd = ro
-				}
-				procShowWindow.Call(hwnd, uintptr(swRestore))
-				procSetForegroundWindow.Call(hwnd)
-				_, _, _ = procFreeConsole.Call()
-				return nil
+			// 直接使用 GetConsoleWindow 返回的窗口：
+			//   独立控制台 → PseudoConsoleWindow / ConsoleWindowClass → 合法目标
+			//   ConPTY 内嵌 → AttachConsole 通常直接失败，走不到这里
+			if ro, _, _ := procGetAncestor.Call(hwnd, 3); ro != 0 {
+				hwnd = ro
 			}
+			procShowWindow.Call(hwnd, uintptr(swRestore))
+			procSetForegroundWindow.Call(hwnd)
+			_, _, _ = procFreeConsole.Call()
+			return nil
 		}
 		_, _, _ = procFreeConsole.Call()
 	}
@@ -197,6 +197,10 @@ func (w *windowsInjector) ShowWindow(pid int) error {
 	// ---- 路径 2：ConPTY 伪控制台（IDE 内嵌终端等，无原生 HWND）----
 	// 沿进程祖先链向上查找拥有可见顶层窗口的进程
 	hwnd := findWindowForPID(uint32(pid))
+	if hwnd == 0 {
+		// 回退：反向搜索——枚举所有顶层窗口，检查目标 PID 是否在后代中
+		hwnd = reverseFindWindow(uint32(pid))
+	}
 	if hwnd == 0 {
 		return fmt.Errorf("未找到窗口（PID %d）\n该实例可能运行在无窗口环境中", pid)
 	}
@@ -250,12 +254,50 @@ func getParentPID(pid uint32) uint32 {
 	return 0
 }
 
+// reverseFindWindow 是 findWindowForPID 的回退方案：
+// 枚举所有可见顶层窗口，对每个窗口检查目标 PID 是否在其后代进程中。
+// 返回第一个匹配的窗口句柄，未找到返回 0。
+func reverseFindWindow(target uint32) uintptr {
+	// 先构建目标 PID 的祖先集合（单次快照）
+	ancestors := make(map[uint32]bool)
+	ancestors[target] = true
+	current := target
+	for range 10 {
+		parent := getParentPID(current)
+		if parent == 0 || parent == current {
+			break
+		}
+		ancestors[parent] = true
+		current = parent
+	}
+
+	// 枚举所有顶层窗口，找第一个属于祖先集的可见窗口
+	var result uintptr
+	cb := syscall.NewCallback(func(hwnd uintptr, lParam uintptr) uintptr {
+		var wndPID uint32
+		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&wndPID)))
+		if ancestors[wndPID] && !isShellProcess(wndPID) {
+			vis, _, _ := procIsWindowVisible.Call(hwnd)
+			if vis != 0 {
+				titleLen, _, _ := procGetWindowTextLengthW.Call(hwnd)
+				if titleLen > 0 || isConsoleWindowClass(hwnd) {
+					result = hwnd
+					return 0 // 停止枚举
+				}
+			}
+		}
+		return 1 // 继续
+	})
+	procEnumWindows.Call(cb, 0)
+	return result
+}
+
 // findWindowForPID 沿进程祖先链向上查找拥有可见顶层窗口的进程，
 // 最多向上追溯 5 级。跳过 cmd.exe / powershell.exe 等 shell 进程，
 // 因为它们在 ConPTY 下会产生「幽灵」可见窗口（实际无法被 SetForegroundWindow 拉起）。
 func findWindowForPID(pid uint32) uintptr {
 	current := pid
-	for range 5 {
+	for range 10 {
 		hwnd := findTopLevelWindow(current)
 		if hwnd != 0 && !isShellProcess(current) {
 			return hwnd
@@ -269,7 +311,9 @@ func findWindowForPID(pid uint32) uintptr {
 	return 0
 }
 
-// isShellProcess 判断一个进程是否是命令行 shell（在 ConPTY 下它们的窗口不可靠）。
+// isShellProcess 判断进程是否是不应作为窗口目标的进程（shell 解释器、系统进程）。
+// explorer.exe 等系统进程永远不应被 SetForegroundWindow。
+// 注意：conhost.exe / OpenConsole.exe 不在此列——它们是 Path 1 的合法窗口目标。
 func isShellProcess(pid uint32) bool {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -285,11 +329,30 @@ func isShellProcess(pid uint32) bool {
 	for {
 		if pe.ProcessID == pid {
 			name := strings.ToLower(windows.UTF16ToString(pe.ExeFile[:]))
-			return name == "cmd.exe" || name == "powershell.exe" || name == "pwsh.exe"
+			return isShellExeName(name)
 		}
 		if err := windows.Process32Next(snapshot, &pe); err != nil {
 			break
 		}
+	}
+	return false
+}
+
+// isShellExeName 判断进程名是否属于应跳过的进程：
+//   - shell 解释器（控制台子系统，无自有窗口）
+//   - 系统进程（explorer.exe 等，永远不应作为目标，到达说明祖先链已越界）
+func isShellExeName(name string) bool {
+	switch name {
+	// Windows 自带 shell
+	case "cmd.exe", "powershell.exe", "pwsh.exe":
+		return true
+	// Unix shell（Git Bash / MSYS2 / Cygwin / WSL）
+	case "bash.exe", "sh.exe", "zsh.exe", "fish.exe", "dash.exe":
+		return true
+	// 系统进程 —— 到此说明祖先链已越界，绝不应返回其窗口
+	case "explorer.exe", "svchost.exe", "csrss.exe",
+		"wininit.exe", "winlogon.exe", "services.exe", "lsass.exe":
+		return true
 	}
 	return false
 }
@@ -301,6 +364,16 @@ func isConsoleWindowShell(hwnd uintptr) bool {
 	var pid uint32
 	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
 	return pid != 0 && isShellProcess(pid)
+}
+
+// isConsoleWindowClass 判断窗口类名是否为控制台/伪控制台窗口。
+// PseudoConsoleWindow（独立 PowerShell/cmd）和 ConsoleWindowClass（conhost）
+// 即使标题为空也是合法的窗口目标。
+func isConsoleWindowClass(hwnd uintptr) bool {
+	var class [64]uint16
+	procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&class[0])), 64)
+	name := windows.UTF16ToString(class[:])
+	return name == "PseudoConsoleWindow" || name == "ConsoleWindowClass"
 }
 
 // findTopLevelWindow 枚举顶层窗口，返回属于 pid 的第一个可见窗口句柄。
@@ -319,9 +392,9 @@ func findTopLevelWindow(pid uint32) uintptr {
 		if wndPID == target.pid {
 			vis, _, _ := procIsWindowVisible.Call(hwnd)
 			if vis != 0 {
-				// 真正的应用主窗口必须有标题；无标题的是辅助/Popup 窗口，SetForegroundWindow 对它们无效
+				// 主窗口必须有标题；但 PseudoConsoleWindow / ConsoleWindowClass 即使标题为空也是合法目标
 				titleLen, _, _ := procGetWindowTextLengthW.Call(hwnd)
-				if titleLen > 0 {
+				if titleLen > 0 || isConsoleWindowClass(hwnd) {
 					target.hwnd = hwnd
 					target.found = true
 					return 0 // 停止枚举
