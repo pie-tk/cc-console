@@ -58,4 +58,4 @@ end;
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Flags: nowait postinstall; Description: "启动 {#MyAppName}"
-Filename: "ie4uinit.exe"; Parameters: "-show"; Flags: runhidden
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
