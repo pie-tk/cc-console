@@ -27,6 +27,7 @@ SolidCompression=yes
 DisableWelcomePage=yes
 DisableProgramGroupPage=yes
 ChangesAssociations=yes
+ShowLanguageDialog=no
 
 [Languages]
 Name: "zh_CN"; MessagesFile: "Languages\ChineseSimplified.isl"
