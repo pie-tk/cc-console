@@ -21,6 +21,7 @@
         <span id="bridge-badge" class="bridge-badge"></span>
         <span class="flex-spacer"></span>
         <span id="clock" class="clock"></span>
+        <button id="new-instance-btn" class="new-instance-btn" title="新建 Claude Code 实例" onclick="openNewInstancePanel()">＋ 新建实例</button>
         <button id="settings-btn" class="settings-btn" title="设置" onclick="showSettings()">&#x2699;</button>
       </div>
     </header>
@@ -37,6 +38,7 @@
         <div class="empty-icon">🌙</div>
         <div class="empty-title">当前没有运行中的 Claude Code 实例</div>
         <div class="empty-hint">启动一个 Claude Code 会话后，它会自动出现在这里</div>
+        <button class="new-instance-btn empty-new-btn" onclick="openNewInstancePanel()">＋ 新建实例</button>
       </div>
     </div>
 
@@ -58,11 +60,28 @@
         <span class="modal-emoji">✏️</span>
         <span class="modal-title">发送对话到该实例</span>
       </div>
-      <div class="modal-subtitle">输入文字后点击 发送 ⏎ 或按 Ctrl+Enter。多行会被折叠为空格。</div>
+      <div class="modal-subtitle" id="prompt-subtitle">输入文字后点击 发送 ⏎ 或按 Enter。多行会被折叠为空格。</div>
       <textarea id="prompt-input" class="modal-textarea" placeholder="输入消息..." rows="5"></textarea>
       <div class="modal-buttons">
         <button id="prompt-cancel" class="btn btn-cancel" onclick="hidePromptModal()">取消</button>
         <button id="prompt-send" class="btn btn-send" onclick="sendPrompt()">发送  ⏎</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建实例面板 -->
+  <div id="new-instance-overlay" class="modal-overlay hidden" onclick="if(event.target===this) closeNewInstancePanel()">
+    <div class="modal-dialog new-instance-dialog">
+      <div class="modal-header">
+        <span class="modal-emoji">📁</span>
+        <span class="modal-title">新建 Claude Code 实例</span>
+      </div>
+      <div class="modal-subtitle">选择工作目录，将在新终端窗口启动 claude · ↑↓ 选择 · 回车启动 · Esc 关闭</div>
+      <div class="recent-list" id="recent-list">
+        <div class="recent-empty">加载中...</div>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn btn-cancel" onclick="closeNewInstancePanel()">取消</button>
       </div>
     </div>
   </div>
@@ -88,8 +107,20 @@
       </div>
       <div id="chat-quick-replies" class="chat-quick-replies hidden"></div>
       <div class="chat-input-area">
-        <textarea id="chat-input" class="chat-input" placeholder="输入消息，Ctrl+Enter 发送，Enter 换行..." rows="3" maxlength="4000"></textarea>
+        <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="3" maxlength="4000"></textarea>
         <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
+      </div>
+      <div id="chat-stats" class="chat-stats hidden">
+        <span class="chat-stat-group">
+          <span class="chat-stat-label">Context</span>
+          <span id="chat-ctx-bar" class="context-bar"></span>
+          <span id="chat-ctx-pct" class="context-pct"></span>
+          <span id="chat-ctx-detail" class="context-detail"></span>
+        </span>
+        <span class="chat-stat-group">
+          <span class="chat-stat-label">Tokens</span>
+          <span id="chat-tokens" class="chat-tokens"></span>
+        </span>
       </div>
     </div>
   </div>
@@ -113,6 +144,28 @@
               </div>
               <label class="toggle">
                 <input type="checkbox" id="toggle-close-quits" onchange="saveSetting('closeQuits', this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-text">
+                <span class="settings-label">新建实例终端窗口</span>
+                <span class="settings-desc">启动新 Claude Code 实例时终端窗口的显示方式</span>
+              </div>
+              <select id="select-launch-mode" class="settings-select" onchange="saveSetting('launchMode', this.value)">
+                <option value="show">显示</option>
+                <option value="hide">最小化</option>
+              </select>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-text">
+                <span class="settings-label">回车直接发送</span>
+                <span class="settings-desc">开启：回车发送、Shift+回车换行；关闭：回车换行、Shift+回车发送</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-enter-to-send" onchange="saveSetting('enterToSend', this.checked)">
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>
                 </span>

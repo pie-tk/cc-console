@@ -577,6 +577,59 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   border-color: var(--secondary-text);
 }
 
+/* ===== New Instance Button & Panel ===== */
+.new-instance-btn {
+  background: var(--accent);
+  color: #FFF;
+  border: 1px solid var(--accent);
+  font-size: 9pt;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 10px;
+  margin-left: 10px;
+  line-height: 1;
+  border-radius: 6px;
+  transition: opacity 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+.new-instance-btn:hover { opacity: 0.9; }
+.empty-new-btn { margin-top: 16px; padding: 8px 22px; font-size: 10pt; }
+
+/* 最近目录快速选择面板 */
+.new-instance-dialog { width: 560px; max-height: 80vh; }
+.recent-list { max-height: 320px; overflow-y: auto; padding: 4px 12px; margin: 0 12px 8px; }
+.recent-empty { padding: 24px; text-align: center; color: var(--secondary-text); font-size: 9pt; }
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 10pt;
+  color: var(--window-text);
+}
+.recent-item:hover, .recent-item.active { background: var(--card-hover-bg); }
+.recent-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+.recent-item-icon { font-size: 12pt; flex-shrink: 0; }
+.recent-item-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, "SF Mono", Consolas, "Cascadia Mono", monospace;
+  font-size: 9.5pt;
+}
+.recent-item-pick {
+  border-top: 1px solid var(--divider);
+  margin-top: 4px;
+  padding-top: 11px;
+  color: var(--secondary-text);
+}
+.recent-item-pick .recent-item-path { font-family: inherit; font-weight: 500; }
+
 /* ===== Settings Dialog ===== */
 .settings-dialog {
   background: var(--window-bg);
@@ -700,6 +753,23 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .toggle input:checked + .toggle-track .toggle-thumb {
   transform: translateX(16px);
 }
+
+/* ===== Settings Select ===== */
+.settings-select {
+  font-family: inherit;
+  font-size: 9pt;
+  color: var(--window-text);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.settings-select:focus,
+.settings-select:hover { border-color: var(--accent); }
 
 /* ===== About Section ===== */
 .about-content {
@@ -992,6 +1062,35 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .chat-input:focus { border-color: var(--accent); }
 .chat-input::placeholder { color: var(--subtle-text); }
 
+/* 输入框下方的 context/tokens 信息条（与卡片同形式） */
+.chat-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 20px 10px;
+  flex-shrink: 0;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 9pt;
+}
+.chat-stat-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.chat-stat-label {
+  font-size: 8.5pt;
+  color: var(--subtle-text);
+  flex-shrink: 0;
+}
+.chat-tokens {
+  color: var(--secondary-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chat-send-btn {
   padding: 8px 16px;
   font-size: 9pt;
@@ -1095,6 +1194,16 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   border-color: #E53E3E;
 }
 .quick-reply-btn.danger:hover { background: #FFF5F5; }
+/* AskUserQuestion 多问导航(‹ ›):更小、次要样式,只切换显示不发送 */
+.quick-reply-btn.nav {
+  padding: 6px 10px;
+  font-size: 11pt;
+  line-height: 1;
+  opacity: 0.7;
+  min-width: 30px;
+}
+.quick-reply-btn.nav:hover:not(:disabled) { opacity: 1; }
+.quick-reply-btn.nav:disabled { opacity: 0.3; cursor: default; }
 
 /* Interactive assistant message: highlight that agent is asking */
 .chat-msg-interactive {

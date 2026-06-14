@@ -125,6 +125,60 @@ func (s *MonitorService) GetChatHistory(pid int) (*monitor.ChatHistoryResult, er
 	return &result, nil
 }
 
+// ---- 实例启动 ----
+
+// GetRecentDirs 返回最近工作目录（去重，最多 8 个，最近在前）。
+func (s *MonitorService) GetRecentDirs() []string {
+	return monitor.GetRecentDirs()
+}
+
+// PickDirectory 弹出系统原生文件夹选择框，返回选中路径。
+// 取消返回 ("", nil)；出错返回 ("", err)。默认定位到最近目录的第一项。
+func (s *MonitorService) PickDirectory() (string, error) {
+	if s.app == nil {
+		return "", fmt.Errorf("应用未初始化")
+	}
+	opts := &application.OpenFileDialogOptions{
+		CanChooseDirectories: true,
+		CanChooseFiles:       false,
+		CanCreateDirectories: true,
+		Title:                "选择 Claude Code 工作目录",
+	}
+	if dirs := monitor.GetRecentDirs(); len(dirs) > 0 {
+		opts.Directory = dirs[0] // 默认定位到最近目录，提升选择体验
+	}
+	return s.app.Dialog.OpenFileWithOptions(opts).PromptForSingleSelection()
+}
+
+// LaunchInstance 在 workdir 用新终端窗口启动 claude，并把 workdir 记入最近目录。
+// workdir 为空时内部弹出原生文件夹选择框；用户取消时返回 ("", nil)（非错误）。
+// 返回 (usedTerminal, error)：前端用 usedTerminal 做 flashFoot 反馈。
+func (s *MonitorService) LaunchInstance(workdir string) (string, error) {
+	if strings.TrimSpace(workdir) == "" {
+		var err error
+		workdir, err = s.PickDirectory()
+		if err != nil {
+			return "", err
+		}
+		if workdir == "" {
+			return "", nil // 用户取消，不算错误
+		}
+	}
+	mode := monitor.GetSettings().LaunchWindowMode
+	if mode == "" || mode == "minimize" {
+		mode = "hide"
+	}
+	used, err := monitor.LaunchClaudeInDir(workdir, mode)
+	if err != nil {
+		return "", err
+	}
+	// 记入最近目录（失败不致命，不影响启动结果）
+	if _, e := monitor.AddRecentDir(workdir); e != nil {
+		fmt.Println("记录最近目录失败:", e)
+	}
+	return used, nil
+}
+
 // ---- statusline 桥接 ----
 
 // BridgeInfo 返回 statusline 桥接的配置状态 + 当前实时接入比例。
@@ -172,30 +226,41 @@ func (s *MonitorService) DisableBridge() error {
 
 // SettingsResult 返回给前端的设置数据。
 type SettingsResult struct {
-	CloseQuits bool   `json:"closeQuits"`
-	AutoStart  bool   `json:"autoStart"`
-	Version    string `json:"version"`
+	CloseQuits       bool   `json:"closeQuits"`
+	AutoStart        bool   `json:"autoStart"`
+	Version          string `json:"version"`
+	LaunchWindowMode string `json:"launchWindowMode"` // show/minimize/hide
+	EnterToSend      bool   `json:"enterToSend"`      // 回车直接发送
 }
 
 // Version 应用版本号。
-const Version = "1.3.0"
+const Version = "1.3.1"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
 	cfg := monitor.GetSettings()
 	auto, _ := monitor.IsAutoStartEnabled()
+	mode := cfg.LaunchWindowMode
+	if mode == "" || mode == "minimize" {
+		mode = "hide" // 默认隐藏；旧的 minimize 设置迁移到 hide（minimize 选项已移除）
+	}
 	return &SettingsResult{
-		CloseQuits: cfg.CloseQuits,
-		AutoStart:  auto,
-		Version:    Version,
+		CloseQuits:       cfg.CloseQuits,
+		AutoStart:        auto,
+		Version:          Version,
+		LaunchWindowMode: mode,
+		EnterToSend:      cfg.EnterToSend,
 	}
 }
 
-// SaveSettings 保存设置并同步开机自启状态。
-func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool) error {
+// SaveSettings 保存设置并同步开机自启状态。launchMode 为启动终端窗口模式（show/minimize/hide）。
+// enterToSend 控制消息框发送键：true=回车发送（Shift+回车换行），false=回车换行（Shift+回车发送）。
+func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool, launchMode string, enterToSend bool) error {
 	cfg := monitor.GetSettings()
 	cfg.CloseQuits = closeQuits
 	cfg.AutoStart = autoStart
+	cfg.LaunchWindowMode = launchMode
+	cfg.EnterToSend = enterToSend
 	if err := monitor.SetAutoStart(autoStart); err != nil {
 		return err
 	}

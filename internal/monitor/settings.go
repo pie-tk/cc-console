@@ -8,10 +8,13 @@ import (
 
 // Settings 持久化到 ~/.claude-monitor.json 的应用设置。
 type Settings struct {
-	ModelLimits   map[string]int64 `json:"modelLimits"`
-	CloseQuits    bool             `json:"closeQuits"`
-	AutoStart     bool             `json:"autoStart"`
-	BridgeEnabled bool             `json:"bridgeEnabled"` // statusline 桥接（默认启用）
+	ModelLimits      map[string]int64 `json:"modelLimits"`
+	CloseQuits       bool             `json:"closeQuits"`
+	AutoStart        bool             `json:"autoStart"`
+	BridgeEnabled    bool             `json:"bridgeEnabled"`    // statusline 桥接（默认启用）
+	RecentDirs       []string         `json:"recentDirs"`       // 最近工作目录（≤8，最近在前）
+	LaunchWindowMode string           `json:"launchWindowMode"` // 启动终端窗口模式: show/hide
+	EnterToSend      bool             `json:"enterToSend"`      // 回车直接发送（默认 true）；false 时 Shift+Enter 发送
 }
 
 var currentSettings Settings
@@ -27,8 +30,10 @@ func configPath() (string, error) {
 // LoadSettings 从磁盘加载设置，首次运行返回默认值。
 func LoadSettings() error {
 	currentSettings = Settings{
-		ModelLimits:   map[string]int64{},
-		BridgeEnabled: true, // 默认启用 statusline 桥接
+		ModelLimits:      map[string]int64{},
+		BridgeEnabled:    true,       // 默认启用 statusline 桥接
+		LaunchWindowMode: "hide",     // 默认隐藏窗口启动（不挡视线）
+		EnterToSend:      true,       // 默认回车直接发送（Shift+Enter 换行）
 	}
 	path, err := configPath()
 	if err != nil {
