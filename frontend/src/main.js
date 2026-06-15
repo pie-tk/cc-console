@@ -301,7 +301,7 @@ function cardHTML(inst) {
     + '</div>'
     + '<div class="card-actions">'
     + '<button class="action-btn" onclick="handleClear(' + inst.pid + ')">清空</button>'
-    + '<button class="action-btn" onclick="handlePrompt(' + inst.pid + ')">对话</button>'
+    + '<button class="action-btn" onclick="openChatPanel(' + inst.pid + ')">对话</button>'
     + '<button class="action-btn" onclick="handleRewind(' + inst.pid + ')">回溯</button>'
     + '<button class="action-btn" onclick="handleShowWin(' + inst.pid + ')">窗口</button>'
     + '</div>'
@@ -709,16 +709,19 @@ async function refreshChatMessages(pid) {
   if (pid === null) return;
   try {
     var result = await Call.ByID(ID_GET_CHAT_HISTORY, pid);
-    if (!result || !result.messages) return;
-    if (result.hash === chatHistoryHash && chatHistoryHash !== 0) {
+    // 新会话没有 JSONL 文件时 result.messages 为 null，当作空数组处理，
+    // 避免因 early return 导致面板一直卡在「加载中...」。
+    var messages = (result && result.messages) || [];
+    var hash = (result && result.hash) || 0;
+    if (hash === chatHistoryHash && chatHistoryHash !== 0 && messages.length > 0) {
       // 消息未变(hash 稳定),但实例状态(busy↔idle)或 AskUserQuestion 多问进度可能已变——
       // 交互按钮的显隐依赖这些信号,必须用最近渲染的消息重新评估,
       // 否则「面板已开 + 提示刚出现时短暂 busy」会永久错过按钮注入。
       injectInteractivePrompts(lastChatMessages);
       return;
     }
-    chatHistoryHash = result.hash;
-    renderChatMessages(result.messages);
+    chatHistoryHash = hash;
+    renderChatMessages(messages);
   } catch (e) {
     console.error("Chat history error:", e);
     var msgEl = document.getElementById("chat-messages");
@@ -762,7 +765,7 @@ function renderChatMessages(messages) {
     }
   }
   if (messages.length === 0) {
-    html = '<div class="chat-empty">（暂无会话消息）</div>';
+    html = '<div class="chat-empty">✨ 发送第一条消息，开始对话吧</div>';
   }
   container.innerHTML = html;
   // 检测交互式提示并注入快速回复按钮
@@ -903,10 +906,12 @@ function injectInteractivePrompts(messages) {
 }
 
 // buildAskButtons 由一个 AskUserQuestion 问题(question)构造快速回复按钮。
-// value 用选项 label——Claude Code 的 AskUserQuestion 接受键入的选项文本作答(实测可推进)。
+// value 用选项序号(1-based)——Claude Code 终端 UI 靠数字键选择选项，
+// 发送标签文本无法可靠匹配（含 emoji 等特殊字符时尤其容易误选第一项）。
 function buildAskButtons(question) {
   var opts = (question && question.options) || [];
   var btns = [];
+  var num = 0;
   for (var oi = 0; oi < opts.length; oi++) {
     var opt = opts[oi];
     var label = opt.label || opt;
@@ -914,9 +919,10 @@ function buildAskButtons(question) {
     if (typeof opt === 'string' ? opt === 'Type something.' : (opt.label === 'Type something.')) {
       continue;
     }
+    num++;
     btns.push({
       label: label,
-      value: typeof opt === 'string' ? opt : (opt.label || ''),
+      value: String(num),
       cls: oi === 0 ? 'primary' : ''
     });
   }

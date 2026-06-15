@@ -34,7 +34,7 @@ echo "Version: $VERSION"
 
 echo ""
 echo "=== 5/5 生成 Inno Setup 安装包 ==="
-powershell -Command "& 'C:\Users\PIE TK\AppData\Local\Programs\Inno Setup 6\ISCC.exe' /DMyAppVersion=$VERSION setup.iss"
+powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=$VERSION setup.iss"
 
 echo ""
 echo "=== 完成 ==="

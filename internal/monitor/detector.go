@@ -105,6 +105,12 @@ func Detect() (live []Instance, stale []Instance, err error) {
 		live = append(live, inst)
 	}
 
+	// 过滤无用实例：没有 live 数据、没有对话、且状态未知的进程。
+	// Claude Code 运行时会派生多个子进程（工具沙箱、worker 等），它们也名为 claude.exe，
+	// 但没有 session/对话数据，不应出现在监控列表中。
+	// 保守策略：只要有 live 数据或对话数据或已匹配到会话（status != unknown）就保留。
+	live = filterUseful(live)
+
 	sort.SliceStable(live, func(i, j int) bool {
 		if ri, rj := StatusRank(live[i].Status), StatusRank(live[j].Status); ri != rj {
 			return ri < rj
@@ -146,6 +152,19 @@ func isNonInteractive(pid int) bool {
 		}
 	}
 	return false
+}
+
+// filterUseful 过滤掉无任何有效数据的实例（Claude Code 子进程/工具沙箱等）。
+// 保守策略：只要有一个有效信号（live / 对话 / 会话匹配）就保留。
+// 全无的进程通常是 Claude Code 的内部 worker 或未识别的 Claude Desktop 进程。
+func filterUseful(insts []Instance) []Instance {
+	out := insts[:0]
+	for _, inst := range insts {
+		if inst.Live || inst.HasConversation || inst.Status != "unknown" {
+			out = append(out, inst)
+		}
+	}
+	return out
 }
 
 // statusFromLive 由 live 文件 mtime 推断 busy/idle:statusline 在会话活跃

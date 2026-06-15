@@ -1,5 +1,5 @@
-; Inno Setup 脚本 — Claude Code Monitor
-; 编译: iscc /DMyAppVersion=1.2.7 setup.iss
+; Inno Setup script for Claude Code Monitor
+; Build: iscc /DMyAppVersion=1.3.2 setup.iss
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"

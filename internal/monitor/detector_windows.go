@@ -56,6 +56,26 @@ func filetimeToEpochMs(ft windows.Filetime) int64 {
 	return int64((n - epochDiff100ns) / 10000)
 }
 
+// claudeDesktopPathMarkers 是 Claude Desktop（Anthropic 官方桌面应用，非 Claude Code CLI）
+// 常见安装路径的特征子串（小写）。与 Claude Code CLI（npm/node 安装）区分。
+var claudeDesktopPathMarkers = []string{
+	`\anthropicclaude\`,  // %LOCALAPPDATA%\AnthropicClaude\ (默认安装)
+	`\anthropic\claude`,  // %LOCALAPPDATA%\Anthropic\Claude Desktop\ 等变体
+	`\claude desktop\`,   // Program Files\Claude Desktop\
+	`\programs\claude\`,  // %LOCALAPPDATA%\Programs\Claude\ (Electron)
+}
+
+// isClaudeDesktopPath 判断 exe 路径是否属于 Claude 桌面应用（非 Claude Code CLI）。
+func isClaudeDesktopPath(exePath string) bool {
+	low := strings.ToLower(exePath)
+	for _, m := range claudeDesktopPathMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // enumerateClaudeProcesses 枚举当前所有 claude.exe 进程，返回 pid 与创建时间。
 // 用 Toolhelp32 快照遍历，按进程名（大小写不敏感）匹配 claude.exe，
 // 覆盖 npm/独立安装等所有安装方式——不依赖 Claude Code 写任何 session 文件。
@@ -76,10 +96,11 @@ func enumerateClaudeProcesses() []claudeProc {
 		name := strings.ToLower(windows.UTF16ToString(pe.ExeFile[:]))
 		if name == "claude.exe" {
 			pid := int(pe.ProcessID)
-			// 排除 Claude 桌面应用(AnthropicClaude):它同样名为 claude.exe,但位于
-			// Electron 安装目录,会派生多个子进程,不应算作 Claude Code 实例。
+			// 排除 Claude 桌面应用：与 Claude Code 同名 claude.exe，但位于 Electron
+			// 安装目录，会派生多个子进程，不应算作 Claude Code 实例。
+			// 常见路径: %LOCALAPPDATA%\AnthropicClaude\、Program Files\Claude Desktop\ 等。
 			exePath := strings.ToLower(queryFullProcessImageName(uint32(pid)))
-			if !strings.Contains(exePath, `\anthropicclaude\`) {
+			if !isClaudeDesktopPath(exePath) {
 				out = append(out, claudeProc{pid: pid, createMs: processCreateMs(uint32(pid))})
 			}
 		}

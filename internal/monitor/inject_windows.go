@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -124,7 +125,9 @@ func escapeRecords() []inputRecord {
 	return recs
 }
 
-// sendInputRecords 把按键记录投递到指定进程所附属控制台的输入缓冲区。
+// sendInputRecords 把按键记录分批投递到指定进程所附属控制台的输入缓冲区。
+// 控制台输入缓冲区通常仅 256 条记录，长文本一次性写入会导致末尾回车被丢弃，
+// 文本出现在输入框但未提交。分批写入 + 批次间短暂休眠让目标进程有时机消费。
 func sendInputRecords(pid uint32, recs []inputRecord) error {
 	if len(recs) == 0 {
 		return nil
@@ -144,15 +147,28 @@ func sendInputRecords(pid uint32, recs []inputRecord) error {
 		return fmt.Errorf("GetStdHandle 失败: %v", err)
 	}
 
-	var written uint32
-	r, _, e := procWriteConsoleInput.Call(
-		uintptr(h),
-		uintptr(unsafe.Pointer(&recs[0])),
-		uintptr(len(recs)),
-		uintptr(unsafe.Pointer(&written)),
-	)
-	if r == 0 {
-		return fmt.Errorf("WriteConsoleInput 失败: %v", e)
+	// 每批最多 200 条记录（≈100 字符），确保不超出控制台输入缓冲区
+	const batchRecords = 200
+	for offset := 0; offset < len(recs); offset += batchRecords {
+		end := offset + batchRecords
+		if end > len(recs) {
+			end = len(recs)
+		}
+		batch := recs[offset:end]
+		var written uint32
+		r, _, e := procWriteConsoleInput.Call(
+			uintptr(h),
+			uintptr(unsafe.Pointer(&batch[0])),
+			uintptr(len(batch)),
+			uintptr(unsafe.Pointer(&written)),
+		)
+		if r == 0 {
+			return fmt.Errorf("WriteConsoleInput 失败: %v", e)
+		}
+		// 批次之间给目标进程时间消费输入，避免下一批写入时缓冲区仍满
+		if end < len(recs) {
+			time.Sleep(15 * time.Millisecond)
+		}
 	}
 	return nil
 }
