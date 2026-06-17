@@ -147,9 +147,14 @@ func sendInputRecords(pid uint32, recs []inputRecord) error {
 		return fmt.Errorf("GetStdHandle 失败: %v", err)
 	}
 
-	// 每批最多 200 条记录（≈100 字符），确保不超出控制台输入缓冲区
-	const batchRecords = 200
-	for offset := 0; offset < len(recs); offset += batchRecords {
+	// 控制台输入缓冲区容量有限，且中文等宽字符目标进程消费较慢。
+	// 若一次性写入过多记录，末尾记录（往往是回车）会被挤掉，
+	// 表现为「文本出现但未发送」。故：
+	//   1. 每批控制在 batchRecords 条，给目标进程留出消费时间
+	//   2. 检查实际写入数，缓冲区满导致部分写入时短暂休眠后重试剩余部分
+	const batchRecords = 64
+	const backoff = 15 * time.Millisecond
+	for offset := 0; offset < len(recs); {
 		end := offset + batchRecords
 		if end > len(recs) {
 			end = len(recs)
@@ -165,9 +170,16 @@ func sendInputRecords(pid uint32, recs []inputRecord) error {
 		if r == 0 {
 			return fmt.Errorf("WriteConsoleInput 失败: %v", e)
 		}
+		// 部分写入（written < 期望）：缓冲区已满，等待目标进程消费后重试未写入部分
+		if int(written) < len(batch) {
+			offset += int(written)
+			time.Sleep(backoff)
+			continue
+		}
+		offset = end
 		// 批次之间给目标进程时间消费输入，避免下一批写入时缓冲区仍满
-		if end < len(recs) {
-			time.Sleep(15 * time.Millisecond)
+		if offset < len(recs) {
+			time.Sleep(backoff)
 		}
 	}
 	return nil
@@ -184,7 +196,14 @@ func (w *windowsInjector) SendRewind(pid int) error {
 }
 
 func (w *windowsInjector) SendPrompt(pid int, text string) error {
-	return sendInputRecords(uint32(pid), withEnter(textRecords(text)))
+	// 先注入文本，等待目标进程消费完（尤其中文宽字符消费较慢），再单独注入回车。
+	// 文本与回车同批注入时，末尾回车易被控制台输入缓冲区挤掉，
+	// 表现为「文本已出现在输入框但未发送」。
+	if err := sendInputRecords(uint32(pid), textRecords(text)); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return sendInputRecords(uint32(pid), withEnter(nil))
 }
 
 func (w *windowsInjector) ShowWindow(pid int) error {

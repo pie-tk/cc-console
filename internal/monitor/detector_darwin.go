@@ -9,5 +9,6 @@ func init() {
 	}
 	// TODO: 实现 macOS claude 进程枚举（ps / libproc）+ 工作目录（proc_pidinfo）
 	enumerateClaude = func() []claudeProc { return nil }
+	enumerateChildren = func(claudePids []int) map[int][]int { return nil }
 	procCwd = func(pid int) string { return "" }
 }

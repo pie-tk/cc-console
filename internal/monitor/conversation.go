@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -50,6 +51,59 @@ func encodeProjectPath(cwd string) string {
 	return r.Replace(cwd)
 }
 
+// Claude Code 在消息文本里嵌入的伪 XML 注解标签。这些标签直接显示在卡片/消息里很突兀，
+// 卡片只需"人类可读"的摘要文本，因此用 stripAnnotations 清洗。
+var (
+	// ansiRe 匹配终端 ANSI 颜色转义（如 \x1b[1m），命令输出里常见，不清洗会显示 [1m 乱码。
+	ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+	// blankLinesRe 压缩多余空行。
+	blankLinesRe = regexp.MustCompile(`\n{3,}`)
+)
+
+// ccRemoveTags 这些标签连同内容整体移除（系统噪音 / 命令事件 / 思考，非用户真实提问）。
+var ccRemoveTags = []string{
+	"system-reminder", "env", "user-memory-content",
+	"task-notification", "task-reminder", "persisted-output",
+	"local-command-caveat", "local-command-stdout", "local-command-stderr",
+	"command-name", "command-message", "command-args", "command-body",
+	"thinking", "antThinking",
+}
+
+// ccUnwrapTags 这些标签保留内文、只去掉外壳（摘录 / Bash 输入输出）。
+var ccUnwrapTags = []string{"excerpt", "bash-input", "bash-stdout", "bash-stderr"}
+
+var (
+	ccRemoveRe []*regexp.Regexp // 每个 remove 标签一条：开+内容+闭
+	ccUnwrapRe []*regexp.Regexp // 每个 unwrap 标签一条：开或闭
+	ccLooseRe  *regexp.Regexp   // 兜底：清除残留孤立已知标签
+)
+
+func init() {
+	for _, t := range ccRemoveTags {
+		ccRemoveRe = append(ccRemoveRe, regexp.MustCompile(`(?is)<`+regexp.QuoteMeta(t)+`\b[^>]*>.*?</`+regexp.QuoteMeta(t)+`>`))
+	}
+	for _, t := range ccUnwrapTags {
+		ccUnwrapRe = append(ccUnwrapRe, regexp.MustCompile(`(?i)</?`+regexp.QuoteMeta(t)+`\b[^>]*>`))
+	}
+	all := append(append([]string{}, ccRemoveTags...), ccUnwrapTags...)
+	ccLooseRe = regexp.MustCompile(`(?i)</?(?:` + strings.Join(all, "|") + `)\b[^>]*>`)
+}
+
+// stripAnnotations 清洗 Claude Code 注解标签，返回人类可读的纯文本（供卡片的提问/主题/历史摘要使用）。
+// 顺序：去 ANSI → 移除噪音块（含内容）→ 剥摘录/Bash 外壳（留内容）→ 清残片 → 压缩空行。
+func stripAnnotations(s string) string {
+	s = ansiRe.ReplaceAllString(s, "")
+	for _, re := range ccRemoveRe {
+		s = re.ReplaceAllString(s, "")
+	}
+	for _, re := range ccUnwrapRe {
+		s = re.ReplaceAllString(s, "")
+	}
+	s = ccLooseRe.ReplaceAllString(s, "")
+	s = blankLinesRe.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
+}
+
 // transcriptPathFor 返回会话 jsonl 路径:优先用 statusline 提供的官方路径(归属准确),
 // 否则回退到 cwd+sessionId 拼接(旧逻辑,无桥接时可能不准)。
 func transcriptPathFor(s *SessionInfo) string {
@@ -77,7 +131,10 @@ func loadConversationDetails(s *SessionInfo) convDetails {
 	}
 	d.hasFile = true
 	mtime := info.ModTime().UnixNano()
-	if c, ok := convCache[path]; ok && c.mtime == mtime {
+	cacheMu.RLock()
+	c, ok := convCache[path]
+	cacheMu.RUnlock()
+	if ok && c.mtime == mtime {
 		return c.details
 	}
 
@@ -87,9 +144,9 @@ func loadConversationDetails(s *SessionInfo) convDetails {
 	}
 	parseConversation(data, &d)
 
-	defer func() { // 用具名返回/闭包写入缓存
-		convCache[path] = convCacheEntry{mtime: mtime, details: d}
-	}()
+	cacheMu.Lock()
+	convCache[path] = convCacheEntry{mtime: mtime, details: d}
+	cacheMu.Unlock()
 	return d
 }
 
@@ -147,13 +204,14 @@ func parseConversation(data []byte, d *convDetails) {
 				}
 				for _, b := range cl.Message.Content {
 					if b.Type == "text" && b.Text != "" {
-						d.lastReplySnip = b.Text
+						txt := stripAnnotations(b.Text)
+						d.lastReplySnip = txt
 						// 累积到当前轮次的助手回复
 						if inTurn {
 							if pendingReply == "" {
-								pendingReply = b.Text
+								pendingReply = txt
 							} else {
-								pendingReply += "\n" + b.Text
+								pendingReply += "\n" + txt
 							}
 						}
 					}
@@ -241,7 +299,7 @@ func extractUserText(line []byte) string {
 	if c[0] == '"' {
 		var s string
 		if json.Unmarshal(c, &s) == nil {
-			return s
+			return stripAnnotations(s)
 		}
 		return ""
 	}
@@ -252,7 +310,7 @@ func extractUserText(line []byte) string {
 	if json.Unmarshal(c, &blocks) == nil {
 		for _, b := range blocks {
 			if b.Type == "text" && b.Text != "" {
-				return b.Text
+				return stripAnnotations(b.Text)
 			}
 		}
 	}
@@ -262,6 +320,7 @@ func extractUserText(line []byte) string {
 // cleanConvCache 清理文件已不存在的缓存条目，防止长时间运行后缓存无限增长。
 // 由 Detect() 每次调用时触发。
 func cleanConvCache() {
+	cacheMu.Lock()
 	for path := range convCache {
 		if _, err := os.Stat(path); err != nil {
 			delete(convCache, path)
@@ -272,6 +331,7 @@ func cleanConvCache() {
 			delete(chatHistoryCache, path)
 		}
 	}
+	cacheMu.Unlock()
 }
 
 // ---- 聊天面板：完整消息历史解析 ----
@@ -297,7 +357,10 @@ func GetChatHistory(s *SessionInfo) ChatHistoryResult {
 		return result
 	}
 	mtime := info.ModTime().UnixNano()
-	if c, ok := chatHistoryCache[path]; ok && c.mtime == mtime {
+	cacheMu.RLock()
+	c, ok := chatHistoryCache[path]
+	cacheMu.RUnlock()
+	if ok && c.mtime == mtime {
 		return c.result
 	}
 
@@ -308,7 +371,9 @@ func GetChatHistory(s *SessionInfo) ChatHistoryResult {
 	parseChatHistory(data, &result)
 
 	// 缓存写入
+	cacheMu.Lock()
 	chatHistoryCache[path] = chatHistoryCacheEntry{mtime: mtime, result: result}
+	cacheMu.Unlock()
 	return result
 }
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,17 +25,30 @@ type claudeProc struct {
 
 // 平台特定实现，由 detector_windows.go / detector_darwin.go 在 init 中注册。
 var (
-	isProcessAlive  func(pid int, startedAt int64) bool // 单 pid 存活验证（保留供其他场景）
-	enumerateClaude func() []claudeProc                 // 枚举所有 claude.exe 进程
-	procCwd         func(pid int) string                // 读进程工作目录
+	isProcessAlive     func(pid int, startedAt int64) bool  // 单 pid 存活验证（保留供其他场景）
+	enumerateClaude    func() []claudeProc                  // 枚举所有 claude.exe 进程
+	procCwd            func(pid int) string                 // 读进程工作目录
+	enumerateChildren  func(claudePids []int) map[int][]int // 各 claude.exe 的直接子进程 pid（供 busy 判定，非 Win 为 nil）
 )
+
+// cacheMu 保护下面所有包级缓存 map（lastInstanceByPid / lastBusyAt / convCache /
+// chatHistoryCache / gitBranchCache）。这些 map 同时被多条 goroutine 访问：
+// 前端每秒 DetectInstances、托盘 goroutine 每 2 秒 Detect、聊天面板 GetChatHistory。
+// 不加锁会触发 Go runtime fatal error: concurrent map read and map write，进程直接被杀
+// （表现为程序无声闪退）。每处访问最小化持锁，绝不嵌套同锁，避免死锁。
+var cacheMu sync.RWMutex
 
 // lastInstanceByPid 缓存最近一次 Detect 为每个 pid 构造的会话信息，供 GetChatHistory(pid) 复用。
 var lastInstanceByPid = map[int]*SessionInfo{}
 
+// lastBusyAt 记录每个 pid 最近一次判定为 busy 的时刻(ms),用于 fusedStatus 滞回。
+var lastBusyAt = map[int]int64{}
+
 // GetCachedSession 返回最近一次 Detect 缓存的 pid 对应会话信息（供 GetChatHistory 复用）。
 func GetCachedSession(pid int) (*SessionInfo, bool) {
+	cacheMu.RLock()
 	si, ok := lastInstanceByPid[pid]
+	cacheMu.RUnlock()
 	return si, ok
 }
 
@@ -44,8 +58,9 @@ type sessionMeta struct {
 	mtimeMs   int64 // 文件 mtime（epoch 毫秒）
 }
 
-// busyThresholdMs：jsonl mtime 距当前时间小于此值视为 busy（正在输出）。
-const busyThresholdMs int64 = 3000
+// busyGraceMs：失去 busy 信号(statusline 停止刷新且无工具子进程)后仍保持 busy 的宽限期。
+// 滞回窗口,消除 statusline 零星刷新导致的 busy/idle 抖动。
+const busyGraceMs int64 = 6000
 
 // Detect 返回当前存活的 Claude Code 实例。
 //
@@ -65,6 +80,11 @@ func Detect() (live []Instance, stale []Instance, err error) {
 
 	procs := enumerateClaude()
 	sessionsByCwd := indexProjectSessions() // 仅 fallback 路径用
+	claudePids := make([]int, 0, len(procs))
+	for _, p := range procs {
+		claudePids = append(claudePids, p.pid)
+	}
+	children := enumerateChildren(claudePids) // 各 claude.exe 的子进程,供 busy 判定
 	usedSession := make(map[string]bool)
 	alivePids := make(map[int]bool, len(procs))
 
@@ -92,8 +112,14 @@ func Detect() (live []Instance, stale []Instance, err error) {
 			inst = buildInstanceFallback(p, sessionsByCwd, usedSession, now)
 		}
 
+		// 融合判定 busy/idle:statusline 流式信号 + 进程树工具子进程 + 滞回。
+		// Claude Code 在执行子进程类工具期间不调用 statusline(live 文件停止刷新),
+		// 单靠 mtime 会把"正在跑工具"误判为 idle——靠子进程信号补救,滞回消除抖动。
+		streaming := hasLive && now-mtime < liveBusyMs
+		inst.Status = fusedStatus(p.pid, streaming, hasToolChild(p.pid, children), hasLive || inst.HasConversation, now)
+
 		// 缓存 SessionInfo 供 GetChatHistory(pid) 复用(含 transcriptPath,读历史用)
-		lastInstanceByPid[p.pid] = &SessionInfo{
+		si := &SessionInfo{
 			Pid:            p.pid,
 			SessionID:      inst.SessionID,
 			Cwd:            inst.Cwd,
@@ -101,6 +127,9 @@ func Detect() (live []Instance, stale []Instance, err error) {
 			Status:         inst.Status,
 			TranscriptPath: inst.TranscriptPath,
 		}
+		cacheMu.Lock()
+		lastInstanceByPid[p.pid] = si
+		cacheMu.Unlock()
 
 		live = append(live, inst)
 	}
@@ -120,6 +149,14 @@ func Detect() (live []Instance, stale []Instance, err error) {
 
 	// 清理已退出进程残留的 live 文件
 	CleanLiveFiles(alivePids)
+	// 清理已退出进程的 busy 滞回残留
+	cacheMu.Lock()
+	for pid := range lastBusyAt {
+		if !alivePids[pid] {
+			delete(lastBusyAt, pid)
+		}
+	}
+	cacheMu.Unlock()
 	cleanConvCache()
 	return live, stale, nil
 }
@@ -167,14 +204,54 @@ func filterUseful(insts []Instance) []Instance {
 	return out
 }
 
-// statusFromLive 由 live 文件 mtime 推断 busy/idle:statusline 在会话活跃
-// (思考/工具执行,spinner 转动)时频繁刷新,mtime 距 now < 3s 视为 busy。
-// 比 CPU 更准——不受工具执行期 claude 等待子进程导致 CPU 低谷的干扰。
-func statusFromLive(mtimeMs, nowMs int64) string {
-	if nowMs-mtimeMs < liveBusyMs {
+// fusedStatus 综合 statusline 流式信号 + 进程树工具执行信号 + 滞回,判定 busy/idle/unknown。
+//
+// 背景:Claude Code 在执行子进程类工具期间不调用 statusline,live 文件停止刷新,
+// 单靠 mtime 会把"正在跑工具"误判为 idle。引入进程树信号补救,并用滞回消除抖动:
+//   streaming    —— live 文件新鲜(statusline 正在刷新 = 模型流式输出/TUI 活跃)
+//   hasToolChild —— claude.exe 有非 MCP 的直接子进程(正在执行 Bash 等阻塞型工具)
+//   hasSignal    —— 有 live 或对话数据(用于区分 idle 与"无任何数据"的 unknown)
+func fusedStatus(pid int, streaming, hasToolChild, hasSignal bool, nowMs int64) string {
+	if streaming || hasToolChild {
+		cacheMu.Lock()
+		lastBusyAt[pid] = nowMs
+		cacheMu.Unlock()
 		return "busy"
 	}
-	return "idle"
+	// 失去 busy 信号后宽限一段时间仍算 busy,平滑 statusline 零星刷新的空窗
+	cacheMu.RLock()
+	lb := lastBusyAt[pid]
+	cacheMu.RUnlock()
+	if lb > 0 && nowMs-lb < busyGraceMs {
+		return "busy"
+	}
+	if hasSignal {
+		return "idle"
+	}
+	return "unknown"
+}
+
+// hasToolChild 判定 pid 是否有"正在执行工具"的直接子进程。
+// 排除常驻进程:MCP server(命令行含 mcp/--stdio)与我们的 statusline hook(bridge.mjs/
+// claude-monitor-sl,statusline 刷新时的瞬时 node 子进程)。这些在 idle 实例上也常驻,
+// 不排除会永远误判 busy。读不到命令行(权限等)保守跳过,不据此判 busy。
+func hasToolChild(pid int, children map[int][]int) bool {
+	for _, child := range children[pid] {
+		cmd := strings.ToLower(processCmdline(child))
+		if cmd == "" || isExcludedChild(cmd) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// isExcludedChild 判定子进程命令行是否属于常驻/自身进程(不应计为工具执行)。
+func isExcludedChild(cmd string) bool {
+	return strings.Contains(cmd, "mcp") ||
+		strings.Contains(cmd, "--stdio") ||
+		strings.Contains(cmd, "bridge.mjs") ||
+		strings.Contains(cmd, "claude-monitor-sl")
 }
 
 // buildInstanceFromLive 用 statusline 桥接的实时数据构建实例(live 文件新鲜)。
@@ -188,7 +265,6 @@ func buildInstanceFromLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int64) I
 		TranscriptPath: rec.TranscriptPath,
 	}
 	inst := buildInstance(p.pid, si) // 读 jsonl 历史(用 transcriptPath,归属准确)
-	inst.Status = statusFromLive(mtimeMs, nowMs)
 	inst.UpdatedAt = mtimeMs
 	inst.BridgeConnected = true
 	inst.Live = true
@@ -234,7 +310,6 @@ func buildInstanceFromStaleLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int
 		Cwd:            rec.Cwd,
 		StartedAt:      p.createMs,
 		TranscriptPath: rec.TranscriptPath,
-		Status:         statusFromLive(mtimeMs, nowMs),
 	}
 	inst := buildInstance(p.pid, si)
 	inst.UpdatedAt = mtimeMs
@@ -267,10 +342,8 @@ func buildInstanceFallback(p claudeProc, sessionsByCwd map[string][]sessionMeta,
 	}
 	inst := buildInstance(p.pid, si)
 	if meta != nil {
-		inst.Status = inferStatus(meta, nowMs)
 		inst.UpdatedAt = meta.mtimeMs
 	} else {
-		inst.Status = "unknown"
 		inst.UpdatedAt = p.createMs
 	}
 	inst.BridgeConnected = false
@@ -373,17 +446,6 @@ func matchSession(cwd string, sessionsByCwd map[string][]sessionMeta, used map[s
 	return latest.sessionID, latest
 }
 
-// inferStatus 由 jsonl 的 mtime 推断 busy/idle：文件在最近 busyThresholdMs 内被写入视为 busy。
-func inferStatus(meta *sessionMeta, nowMs int64) string {
-	if meta == nil || meta.mtimeMs == 0 {
-		return "idle"
-	}
-	if nowMs-meta.mtimeMs < busyThresholdMs {
-		return "busy"
-	}
-	return "idle"
-}
-
 func buildInstance(pid int, s *SessionInfo) Instance {
 	inst := Instance{Pid: pid, Status: "unknown"}
 	if s != nil {
@@ -392,6 +454,7 @@ func buildInstance(pid int, s *SessionInfo) Instance {
 			inst.Status = "unknown"
 		}
 		inst.Cwd = s.Cwd
+		inst.GitBranch = detectGitBranch(s.Cwd)
 		inst.Version = s.Version
 		inst.SessionID = s.SessionID
 		inst.StartedAt = s.StartedAt

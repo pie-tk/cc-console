@@ -14,6 +14,7 @@ import (
 func init() {
 	isProcessAlive = isProcessAliveWindows
 	enumerateClaude = enumerateClaudeProcesses
+	enumerateChildren = enumerateClaudeChildren
 	procCwd = func(pid int) string {
 		cwd, err := getProcessCwd(uint32(pid))
 		if err != nil {
@@ -106,6 +107,46 @@ func enumerateClaudeProcesses() []claudeProc {
 		}
 		if err := windows.Process32Next(snapshot, &pe); err != nil {
 			break
+		}
+	}
+	return out
+}
+
+// enumerateClaudeChildren 返回每个 claude.exe 的直接子进程 pid 列表。
+// 用于 busy 判定:Claude Code 执行子进程类工具(Bash 等)时会 spawn 子进程,而
+// statusLine 在工具执行期间不刷新——子进程是此时段最可靠的 busy 信号。
+// 一次 Toolhelp32 快照建 pid→parent,再按入参 claudePids 反转出 children。
+func enumerateClaudeChildren(claudePids []int) map[int][]int {
+	if len(claudePids) == 0 {
+		return nil
+	}
+	parents := make(map[uint32]uint32, 256)
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snapshot)
+
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+	if err := windows.Process32First(snapshot, &pe); err != nil {
+		return nil
+	}
+	for {
+		parents[pe.ProcessID] = pe.ParentProcessID
+		if err := windows.Process32Next(snapshot, &pe); err != nil {
+			break
+		}
+	}
+
+	want := make(map[uint32]bool, len(claudePids))
+	for _, pid := range claudePids {
+		want[uint32(pid)] = true
+	}
+	out := make(map[int][]int, len(claudePids))
+	for child, parent := range parents {
+		if want[parent] {
+			out[int(parent)] = append(out[int(parent)], int(child))
 		}
 	}
 	return out

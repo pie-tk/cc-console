@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="/style.css">
   <title>Claude Code 监控</title>
-  <script type="module" crossorigin src="/assets/index-B6dk60s6.js"></script>
+  <script type="module" crossorigin src="/assets/index-DJpdLQdR.js"></script>
 </head>
 <body>
   <div id="app">
@@ -93,6 +93,7 @@
       <div class="chat-header">
         <span class="chat-emoji">💬</span>
         <span class="chat-title" id="chat-title">会话</span>
+        <span class="chat-branch" id="chat-branch"></span>
         <span class="chat-model" id="chat-model"></span>
         <span class="flex-spacer"></span>
         <button class="chat-close-btn" onclick="closeChatPanel()" title="关闭">✕</button>
@@ -153,11 +154,11 @@
             <div class="settings-item">
               <div class="settings-item-text">
                 <span class="settings-label">新建实例终端窗口</span>
-                <span class="settings-desc">启动新 Claude Code 实例时终端窗口的显示方式</span>
+                <span class="settings-desc">启动新实例时终端窗口的显示方式。最小化时窗口收入任务栏，可点击查看运行状态</span>
               </div>
               <select id="select-launch-mode" class="settings-select" onchange="saveSetting('launchMode', this.value)">
                 <option value="show">显示</option>
-                <option value="hide">最小化</option>
+                <option value="hide">最小化到任务栏</option>
               </select>
             </div>
             <div class="settings-item">
@@ -167,6 +168,18 @@
               </div>
               <label class="toggle">
                 <input type="checkbox" id="toggle-enter-to-send" onchange="saveSetting('enterToSend', this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-text">
+                <span class="settings-label">新建实例跳过权限确认</span>
+                <span class="settings-desc">开启后，新建的 Claude Code 实例将跳过所有权限确认（--permission-mode bypassPermissions）</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-launch-yolo" onchange="saveSetting('launchYolo', this.checked)">
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>
                 </span>

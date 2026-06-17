@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"claude-monitor/internal/crashlog"
 	"claude-monitor/internal/monitor"
 	"claude-monitor/service"
 
@@ -91,6 +92,7 @@ func runWailsApp() {
 
 	// ---- 定时更新托盘 tooltip ----
 	go func() {
+		defer crashlog.Recover()
 		for {
 			live, stale, _ := monitor.Detect()
 			busy := monitor.CountStatus(live, "busy")

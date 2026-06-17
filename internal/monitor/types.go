@@ -21,6 +21,7 @@ type Instance struct {
 	DurationMs      int64   `json:"durationMs"`      // 会话时长 ms（statusline cost）
 	BridgeConnected bool    `json:"bridgeConnected"` // statusline 桥接是否对该实例生效
 	Live            bool   `json:"live"`            // 是否有新鲜的 live 数据（实时反映）
+	GitBranch       string `json:"gitBranch"`       // 当前项目 git 分支（无仓库为空）
 	TranscriptPath  string `json:"-"`               // 当前会话 jsonl 官方路径（来自 statusline，内部用）
 	// 累计 token（整个会话所有 assistant 消息求和）
 	TotalInputTokens  int64 `json:"totalInputTokens"`

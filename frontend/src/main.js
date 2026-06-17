@@ -19,6 +19,7 @@ const ID_GET_CHAT_HISTORY  = 3915737321;
 const ID_GET_RECENT_DIRS   = 3059062206;
 const ID_LAUNCH_INSTANCE   = 3964521291;
 const ID_PICK_DIRECTORY    = 3885139809;
+const ID_GET_COMMANDS      = 4004856507; // GetCommandSuggestions(pid)
 
 // ---- State ----
 let currentPids = [];
@@ -42,6 +43,13 @@ let newInstanceSelected = -1; // 新建实例面板当前选中项索引
 let newInstanceItems = [];    // 新建实例面板项：[{type:'dir',path}, {type:'pick'}]
 let sendOnEnter = true;       // 消息框发送键：true=回车发送(Shift+回车换行)；false=回车换行(Shift+回车发送)
 
+// ---- 斜杠命令自动补全状态 ----
+let slashList = [];       // 全量命令/技能建议缓存
+let slashFiltered = [];   // 当前筛选结果
+let slashIdx = 0;         // 选中下标
+let slashOpen = false;    // 下拉是否展开
+let slashInput = null;    // 当前绑定的 textarea（chat-input 或 prompt-input）
+
 // ---- Boot ----
 async function boot() {
   try {
@@ -50,6 +58,7 @@ async function boot() {
     console.error("Theme init error:", e);
   }
   loadSendMode(); // 加载消息框发送键设置，更新占位符/提示文案
+  initSlashAutocomplete(); // 绑定消息框斜杠命令自动补全
   refresh();
   setInterval(refresh, 1000);
 }
@@ -170,6 +179,7 @@ function renderCards(live, stale) {
     newMeta[inst.pid] = {
       topic: inst.topic || '',
       model: inst.model || '',
+      branch: inst.gitBranch || '',
       status: inst.status || 'unknown',
       hasConversation: !!inst.hasConversation,
       contextTokens: inst.contextTokens || 0,
@@ -281,6 +291,7 @@ function cardHTML(inst) {
     + '<div class="card-row">'
     + '<span class="card-emoji">' + emoji + '</span>'
     + '<span class="card-title" data-field="title" title="' + escAttr(cwd) + '">' + escHtml(title) + '</span>'
+    + '<span class="card-branch" data-field="branch">' + escHtml(branchDisplay(inst)) + '</span>'
     + '<span class="card-status ' + statusClass + '" data-field="status">' + label + '</span>'
     + '<span class="card-bridge-tag' + (inst.bridgeConnected ? '' : ' show') + '" data-field="bridge" title="statusline 桥接尚未生效，实时数据待接入（新会话刷新后自动接入）">⏳ 未接入</span>'
     + '<span class="card-pid-subtle">PID ' + inst.pid + '</span>'
@@ -312,6 +323,7 @@ function updateCardText(el, inst) {
   if (!el) return;
   const set = (sel, val) => { const e = el.querySelector(sel); if (e) e.textContent = val; };
   set("[data-field=title]", cwdTitle(inst.cwd || ""));
+  set("[data-field=branch]", branchDisplay(inst));
   set("[data-field=status]", statusLabel(inst.status));
   set("[data-field=model]", modelDisplay(inst));
   set("[data-field=duration]", humanDuration(inst.startedAt));
@@ -380,6 +392,138 @@ function updateCardText(el, inst) {
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// ---- Claude Code 注解标签格式化 ----
+// Claude Code 在消息文本里嵌入伪 XML 注解（斜杠命令、系统提示、任务通知、摘录等），
+// 直接显示尖括号原文很突兀。formatRichContent 把已知标签渲染成带样式的结构化块，
+// 未知标签（含代码里的 <…>）按普通文本转义，不破坏源码。
+
+// 去除终端 ANSI 颜色转义（命令输出里常见，否则显示 [1m 乱码）。
+function stripAnsi(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
+
+// 已知容器标签 → 渲染类型。
+var CC_BLOCK_TAGS = {
+  'command-name':'cmd', 'command-message':'cmd', 'command-args':'cmd', 'command-body':'cmd',
+  'local-command-stdout':'cmdout', 'local-command-stderr':'cmderr', 'local-command-caveat':'cmdcaveat',
+  'system-reminder':'system', 'env':'env', 'user-memory-content':'memory',
+  'task-notification':'task', 'task-reminder':'task',
+  'persisted-output':'persisted',
+  'excerpt':'quote',
+  'bash-input':'bashin','bash-stdout':'bashout','bash-stderr':'basherr',
+  'thinking':'think','antThinking':'think',
+};
+// 全部已知标签名（供残片兜底正则用）。
+var CC_TAG_ALT = 'command-name|command-message|command-args|command-body|local-command-stdout|local-command-stderr|local-command-caveat|system-reminder|env|user-memory-content|task-notification|task-reminder|persisted-output|excerpt|bash-input|bash-stdout|bash-stderr|thinking|antThinking';
+
+// grabTag 从 content 中提取某标签的纯文本内文。
+function grabTag(content, tag) {
+  var m = new RegExp('<' + tag + '\\b[^>]*>([\\s\\S]*?)</' + tag + '>', 'i').exec(content);
+  return m ? m[1].replace(/^\n+|\n+$/g, '') : '';
+}
+
+// renderCommandCard 渲染斜杠命令卡片（已合并 name + args）。
+function renderCommandCard(o) {
+  var line = (o.n || '') + (o.a ? (' ' + o.a) : '');
+  return '<div class="cc-cmd"><span class="cc-cmd-icon">⌘</span><code>' + escHtml(line) + '</code></div>';
+}
+
+// renderTask 渲染任务通知：解析内嵌 status/summary。
+function renderTask(content) {
+  var status = grabTag(content, 'status');
+  var summary = grabTag(content, 'summary');
+  var cls = (status === 'success' || status === 'completed') ? 'ok'
+    : (status === 'failed' || status === 'error') ? 'fail' : '';
+  var icon = cls === 'ok' ? '✅' : cls === 'fail' ? '❌' : '🔔';
+  var h = '<div class="cc-task' + (cls ? (' cc-task-' + cls) : '') + '">'
+    + icon + ' <span class="cc-task-label">后台任务' + (status ? (' · ' + escHtml(status)) : '') + '</span>';
+  if (summary) h += '<div class="cc-task-summary">' + escHtml(summary) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+// renderBlock 把单个已知标签的内文渲染成对应结构化块。
+function renderBlock(name, content) {
+  var body = content.replace(/^\n+|\n+$/g, '');
+  switch (CC_BLOCK_TAGS[name]) {
+  case 'cmd': return renderCommandCard({ n: body });
+  case 'cmdout': return '<pre class="cc-cmdout">' + escHtml(body) + '</pre>';
+  case 'cmderr': return '<pre class="cc-cmderr">' + escHtml(body) + '</pre>';
+  case 'cmdcaveat': return '<div class="cc-caveat">⚠ ' + escHtml(body) + '</div>';
+  case 'system': return '<div class="cc-block cc-system"><span class="cc-label">系统</span>' + escHtml(body) + '</div>';
+  case 'env': return '<div class="cc-block cc-system"><span class="cc-label">环境</span>' + escHtml(body) + '</div>';
+  case 'memory': return '<div class="cc-block cc-system"><span class="cc-label">记忆</span>' + formatRichContent(content) + '</div>';
+  case 'task': return renderTask(content);
+  case 'persisted': return '<div class="cc-persisted">📎 ' + escHtml(body) + '</div>';
+  case 'quote': return '<blockquote class="cc-quote">' + formatRichContent(content) + '</blockquote>';
+  case 'bashin': return '<pre class="cc-bashin">$ ' + escHtml(body) + '</pre>';
+  case 'bashout': return '<pre class="cc-cmdout">' + escHtml(body) + '</pre>';
+  case 'basherr': return '<pre class="cc-cmderr">' + escHtml(body) + '</pre>';
+  case 'think': return '<details class="cc-think"><summary>💭 思考过程</summary><div>' + formatRichContent(content) + '</div></details>';
+  default: return escHtml(content); // 未知标签：剥外壳留内文
+  }
+}
+
+// formatRichContent 把含 Claude Code 注解标签的文本渲染成 HTML（未知/代码标签按文本转义）。
+function formatRichContent(text) {
+  if (!text) return '';
+  text = stripAnsi(text);
+  // 先合并斜杠命令三件套 name(+message)(+args) 为一个命令卡片标记（\u0000CMD{json}\u0000），
+  // 这样三件套收成一张卡片，而不是三个零散块。
+  text = text.replace(
+    /<command-name>([\s\S]*?)<\/command-name>\s*(?:<command-message>[\s\S]*?<\/command-message>\s*)?(?:<command-args>([\s\S]*?)<\/command-args>\s*)?/g,
+    function (_, n, a) { return '\u0000CMD' + JSON.stringify({ n: n.trim(), a: (a || '').trim() }) + '\u0000'; }
+  );
+  var html = '';
+  var i = 0;
+  var tagRe = /^<([a-zA-Z][\w-]*)\b[^>]*?\/?>/;
+  while (i < text.length) {
+    // 命令卡片标记
+    if (text.charAt(i) === '\u0000' && text.substr(i, 4) === '\u0000CMD') {
+      var end = text.indexOf('\u0000', i + 4);
+      if (end < 0) { html += escHtml(text.slice(i)); break; }
+      try { html += renderCommandCard(JSON.parse(text.slice(i + 4, end))); } catch (e) { /* 跳过 */ }
+      i = end + 1;
+      continue;
+    }
+    var lt = text.indexOf('<', i);
+    if (lt < 0) { html += escHtml(text.slice(i)); break; }
+    var m = tagRe.exec(text.slice(lt));
+    if (!m || !CC_BLOCK_TAGS[m[1]]) {
+      // 非已知标签（含代码里的 <）：当普通文本，仅吃掉这个 '<' 继续扫描
+      html += escHtml(text.slice(i, lt + 1));
+      i = lt + 1;
+      continue;
+    }
+    html += escHtml(text.slice(i, lt)); // 前导文本
+    var name = m[1];
+    var afterOpen = lt + m[0].length;
+    var close = '</' + name + '>';
+    var ci = text.indexOf(close, afterOpen);
+    var content, eend;
+    if (ci >= 0) { content = text.slice(afterOpen, ci); eend = ci + close.length; }
+    else { content = text.slice(afterOpen); eend = text.length; } // 无闭合：取到结尾
+    html += renderBlock(name, content);
+    i = eend;
+  }
+  return html;
+}
+
+// isAnnotationOnly 判断消息是否"纯注解"（命令/系统/任务事件，无人类真实文本）。
+// 此类消息渲染为居中事件行而非左右气泡。
+function isAnnotationOnly(text) {
+  if (!text) return false;
+  if (!new RegExp('<(?:' + CC_TAG_ALT + ')\\b').test(text)) return false;
+  var t = stripAnsi(text);
+  // 移除命令三件套（name..args 或 name..name）
+  t = t.replace(/<command-name>[\s\S]*?(?:<\/command-args>|<\/command-name>)/g, '');
+  // 移除各 remove 标签（含内容），用反向引用配对开闭
+  t = t.replace(/<(system-reminder|env|user-memory-content|task-notification|task-reminder|persisted-output|local-command-caveat|local-command-stdout|local-command-stderr|command-message|command-args|command-body|thinking|antThinking)\b[^>]*>[\s\S]*?<\/\1>/g, '');
+  // 剥 excerpt/bash 外壳
+  t = t.replace(/<\/?(excerpt|bash-input|bash-stdout|bash-stderr)\b[^>]*>/g, '');
+  // 残片兜底
+  t = t.replace(new RegExp('<\\/?(?:' + CC_TAG_ALT + ')\\b[^>]*>', 'g'), '');
+  return t.replace(/\s/g, '').length === 0;
+}
+
 // ---- Display helpers ----
 function statusEmoji(s) {
   if (s === "busy") return "🔴";
@@ -403,6 +547,12 @@ function topicDisplay(inst) {
   if (!inst.hasConversation) return "（新会话·无消息）";
   if (!inst.topic) return "（暂无主题）";
   return inst.topic;
+}
+
+// 分支展示：有 git 分支返回 "🌿 <branch>"，无仓库/无分支返回空串（前端 :empty 自动隐藏）。
+function branchDisplay(inst) {
+  if (!inst.gitBranch) return "";
+  return "🌿 " + inst.gitBranch;
 }
 
 function outputDisplay(inst) {
@@ -613,6 +763,7 @@ window.handleRewind = async function(pid) {
 
 window.handlePrompt = function(pid) {
   promptTargetPid = pid;
+  loadSlashSuggestions(pid); // 预载斜杠命令/技能供消息框补全
   var overlay = document.getElementById("prompt-overlay");
   var input = document.getElementById("prompt-input");
   overlay.classList.remove("hidden");
@@ -636,6 +787,7 @@ window.openChatPanel = async function(pid) {
   chatHistoryHash = 0;
   lastChatMessages = [];
   lastReplySignature = '';
+  loadSlashSuggestions(pid); // 预载斜杠命令/技能供消息框补全
   // 注意:不重置 ask 多问追踪状态——用户可能关闭面板后重开,中途的多问进度
   // (askQuestionIndex)应保留;重置交给 injectInteractivePrompts 在 tool_use ID 变化时做。
 
@@ -649,6 +801,12 @@ window.openChatPanel = async function(pid) {
     modelEl.style.display = "";
   } else {
     modelEl.style.display = "none";
+  }
+  var branchEl = document.getElementById("chat-branch");
+  if (branchEl) {
+    var br = (meta && meta.branch) ? meta.branch : "";
+    branchEl.textContent = br ? ("🌿 " + br) : "";
+    branchEl.style.display = br ? "" : "none";
   }
 
   document.getElementById("chat-messages").innerHTML = '<div class="chat-empty">加载中...</div>';
@@ -691,12 +849,21 @@ function renderChatStats(pid) {
   if (tokensEl) {
     tokensEl.textContent = chatTokensDisplay(inst) || "—";
   }
+
+  // 分支：每秒刷新，跟随用户在其他终端的分支切换
+  var branchEl = document.getElementById("chat-branch");
+  if (branchEl) {
+    var br = inst.branch || "";
+    branchEl.textContent = br ? ("🌿 " + br) : "";
+    branchEl.style.display = br ? "" : "none";
+  }
 }
 
 window.closeChatPanel = function() {
   document.getElementById("chat-overlay").classList.add("hidden");
   document.getElementById("chat-waiting").classList.add("hidden");
   document.getElementById("chat-quick-replies").classList.add("hidden");
+  hideSlash();
   chatPanelPid = null;
   chatHistoryHash = 0;
   lastChatMessages = [];
@@ -737,15 +904,20 @@ function renderChatMessages(messages) {
     var m = messages[i];
     switch (m.role) {
     case 'user':
-      html += '<div class="chat-msg chat-msg-user">'
-        + '<span class="chat-msg-label">📝 用户</span>'
-        + escHtml(m.content || '')
-        + '</div>';
+      // 纯注解消息（斜杠命令 / 系统提示 / 任务通知）渲染为居中事件行，不做左右气泡
+      if (isAnnotationOnly(m.content || '')) {
+        html += '<div class="chat-msg chat-msg-event">' + formatRichContent(m.content || '') + '</div>';
+      } else {
+        html += '<div class="chat-msg chat-msg-user">'
+          + '<span class="chat-msg-label">📝 用户</span>'
+          + formatRichContent(m.content || '')
+          + '</div>';
+      }
       break;
     case 'assistant':
       html += '<div class="chat-msg chat-msg-assistant">'
         + '<span class="chat-msg-label">🤖 助手</span>'
-        + escHtml(m.content || '')
+        + formatRichContent(m.content || '')
         + '</div>';
       break;
     case 'tool_use':
@@ -756,10 +928,10 @@ function renderChatMessages(messages) {
       break;
     case 'tool_result':
       var rt = m.content || '';
-      if (rt.length > 2000) rt = rt.slice(0, 2000) + '\n... (结果过长，已截断)';
+      if (rt.length > 6000) rt = rt.slice(0, 6000) + '\n... (结果过长，已截断)';
       html += '<div class="chat-msg chat-msg-tool-result">'
         + '<span class="chat-msg-label">📋 工具结果' + (m.toolId ? ' (' + escHtml(m.toolId) + ')' : '') + '</span>'
-        + escHtml(rt)
+        + formatRichContent(rt)
         + '</div>';
       break;
     }
@@ -1056,6 +1228,150 @@ window.sendQuickReply = async function(text) {
   }
 };
 
+// ---- 斜杠命令/技能自动补全 ----
+// 复刻 Claude Code 终端体验：消息框输入 / 后弹出可用命令/技能列表，
+// 上下键选中、Enter/Tab 补全为 /name + 空格（不发送），Esc 关闭。
+// 下拉为 body 级浮层，按 textarea 的 getBoundingClientRect 定位，兼容对话面板与发送对话框。
+
+// initSlashAutocomplete 绑定两个消息框的 input 事件 + 窗口缩放重定位。
+function initSlashAutocomplete() {
+  var chatInput = document.getElementById("chat-input");
+  if (chatInput) {
+    chatInput.addEventListener("input", onSlashInput);
+    chatInput.addEventListener("blur", function() { setTimeout(hideSlash, 120); });
+  }
+  var promptInput = document.getElementById("prompt-input");
+  if (promptInput) {
+    promptInput.addEventListener("input", onSlashInput);
+    promptInput.addEventListener("blur", function() { setTimeout(hideSlash, 120); });
+  }
+  window.addEventListener("resize", function() { if (slashOpen) positionSlashMenu(); });
+}
+
+// loadSlashSuggestions 拉取该实例可用的命令/技能并缓存（面板打开时调用）。
+async function loadSlashSuggestions(pid) {
+  try {
+    slashList = (await Call.ByID(ID_GET_COMMANDS, pid)) || [];
+  } catch (e) {
+    slashList = [];
+  }
+}
+
+// onSlashInput：输入框内容以 / 开头且尚无空白时，按前缀筛选并展开下拉。
+function onSlashInput(e) {
+  slashInput = e.target;
+  var val = slashInput.value;
+  if (val.length > 0 && val.charAt(0) === '/' && !/\s/.test(val)) {
+    var q = val.slice(1).toLowerCase();
+    slashFiltered = slashList.filter(function(c) {
+      return c.name.toLowerCase().indexOf(q) === 0;
+    });
+    // 内置优先，其余按名称排序，保证列表稳定可预期
+    slashFiltered.sort(function(a, b) {
+      if (a.type === 'builtin' && b.type !== 'builtin') return -1;
+      if (b.type === 'builtin' && a.type !== 'builtin') return 1;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+    if (slashFiltered.length > 0) {
+      slashIdx = 0;
+      showSlashMenu();
+      return;
+    }
+  }
+  hideSlash();
+}
+
+function slashTypeLabel(type) {
+  return type === 'builtin' ? '内置' : (type === 'skill' ? '技能' : '命令');
+}
+
+function ensureSlashMenu() {
+  var menu = document.getElementById("slash-menu");
+  if (!menu) {
+    menu = document.createElement("div");
+    menu.id = "slash-menu";
+    menu.className = "slash-menu hidden";
+    document.body.appendChild(menu);
+  }
+  return menu;
+}
+
+function showSlashMenu() {
+  slashOpen = true;
+  var menu = ensureSlashMenu();
+  menu.innerHTML = slashFiltered.map(function(c, i) {
+    return '<div class="slash-item' + (i === slashIdx ? ' selected' : '') + '" data-idx="' + i + '">'
+      + '<span class="slash-item-name">/' + escHtml(c.name) + '</span>'
+      + '<span class="slash-item-type ' + (c.type || 'command') + '">' + escHtml(slashTypeLabel(c.type)) + '</span>'
+      + '<span class="slash-item-desc">' + escHtml(c.description || '') + '</span>'
+      + '</div>';
+  }).join('');
+  var items = menu.querySelectorAll(".slash-item");
+  for (var i = 0; i < items.length; i++) {
+    (function(item) {
+      item.addEventListener("mouseenter", function() {
+        slashIdx = parseInt(item.dataset.idx, 10);
+        highlightSlash();
+      });
+      // mousedown（先于 blur）阻止 textarea 失焦，再补全
+      item.addEventListener("mousedown", function(ev) {
+        ev.preventDefault();
+        slashIdx = parseInt(item.dataset.idx, 10);
+        acceptSlash();
+      });
+    })(items[i]);
+  }
+  positionSlashMenu();
+  menu.classList.remove("hidden");
+}
+
+function positionSlashMenu() {
+  if (!slashInput) return;
+  var menu = document.getElementById("slash-menu");
+  if (!menu) return;
+  var rect = slashInput.getBoundingClientRect();
+  menu.style.left = rect.left + "px";
+  menu.style.width = rect.width + "px";
+  menu.style.bottom = (window.innerHeight - rect.top + 4) + "px"; // 浮在输入框正上方
+}
+
+function highlightSlash() {
+  var menu = document.getElementById("slash-menu");
+  if (!menu) return;
+  var items = menu.querySelectorAll(".slash-item");
+  for (var i = 0; i < items.length; i++) {
+    items[i].classList.toggle("selected", i === slashIdx);
+  }
+  var sel = menu.querySelector(".slash-item.selected");
+  if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+
+// navigateSlash 上下移动选中项（循环）。
+function navigateSlash(delta) {
+  if (slashFiltered.length === 0) return;
+  slashIdx = (slashIdx + delta + slashFiltered.length) % slashFiltered.length;
+  highlightSlash();
+}
+
+// acceptSlash 用选中命令替换输入框的 /query，补全为 /name + 空格，保留焦点。
+function acceptSlash() {
+  if (!slashOpen || slashIdx >= slashFiltered.length) return;
+  var c = slashFiltered[slashIdx];
+  if (slashInput) {
+    slashInput.value = "/" + c.name + " ";
+    var len = slashInput.value.length;
+    slashInput.setSelectionRange(len, len);
+    slashInput.focus();
+  }
+  hideSlash();
+}
+
+function hideSlash() {
+  slashOpen = false;
+  var menu = document.getElementById("slash-menu");
+  if (menu) menu.classList.add("hidden");
+}
+
 // ---- New Instance Panel ----
 
 window.openNewInstancePanel = async function() {
@@ -1156,6 +1472,7 @@ function newInstanceKeyHandler(e) {
 // ---- Prompt Modal ----
 window.hidePromptModal = function() {
   document.getElementById("prompt-overlay").classList.add("hidden");
+  hideSlash();
   promptTargetPid = null;
 };
 
@@ -1175,6 +1492,16 @@ window.sendPrompt = async function() {
 
 document.addEventListener("keydown", function(e) {
   if (newInstanceKeyHandler(e)) return;
+
+  // 斜杠命令下拉导航（对话面板 / 发送对话框均可触发）：菜单展开时拦截方向键、
+  // Enter/Tab（补全而非发送）、Esc（仅关菜单）。必须在发送键判断之前处理。
+  if (slashOpen) {
+    if (e.key === "ArrowDown") { e.preventDefault(); navigateSlash(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); navigateSlash(-1); return; }
+    if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); acceptSlash(); return; }
+    if (e.key === "Escape") { e.preventDefault(); hideSlash(); return; }
+  }
+
   var promptOverlay = document.getElementById("prompt-overlay");
   var settingsOverlay = document.getElementById("settings-overlay");
   var chatOverlay = document.getElementById("chat-overlay");
@@ -1231,6 +1558,8 @@ window.showSettings = async function() {
     if (modeSelect) modeSelect.value = s.launchWindowMode || "hide";
     var sendToggle = document.getElementById("toggle-enter-to-send");
     if (sendToggle) sendToggle.checked = !!s.enterToSend;
+    var yoloToggle = document.getElementById("toggle-launch-yolo");
+    if (yoloToggle) yoloToggle.checked = !!s.launchYolo;
   } catch (e) {
     flashFoot("加载设置失败: " + (e && e.message ? e.message : e));
   }
@@ -1257,8 +1586,9 @@ window.saveSetting = async function(key, val) {
   var autoStart = document.getElementById("toggle-auto-start").checked;
   var launchMode = document.getElementById("select-launch-mode").value;
   var enterToSend = document.getElementById("toggle-enter-to-send").checked;
+  var launchYolo = document.getElementById("toggle-launch-yolo").checked;
   try {
-    await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart, launchMode, enterToSend);
+    await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart, launchMode, enterToSend, launchYolo);
     // 发送键设置需即时生效：更新内存状态并刷新输入框提示文案
     if (key === "enterToSend") {
       sendOnEnter = !!enterToSend;
@@ -1268,13 +1598,15 @@ window.saveSetting = async function(key, val) {
       closeQuits: "关闭按钮行为",
       autoStart: "开机启动",
       launchMode: "终端窗口设置",
-      enterToSend: "发送键设置"
+      enterToSend: "发送键设置",
+      launchYolo: "新建实例权限设置"
     };
     flashFoot("✓  " + (labels[key] || "设置") + "已保存");
   } catch (e) {
     if (key === "closeQuits") document.getElementById("toggle-close-quits").checked = !val;
     else if (key === "autoStart") document.getElementById("toggle-auto-start").checked = !val;
     else if (key === "enterToSend") document.getElementById("toggle-enter-to-send").checked = !val;
+    else if (key === "launchYolo") document.getElementById("toggle-launch-yolo").checked = !val;
     flashFoot("保存失败: " + (e && e.message ? e.message : e));
   }
 };

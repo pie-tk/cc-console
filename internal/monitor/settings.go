@@ -13,8 +13,9 @@ type Settings struct {
 	AutoStart        bool             `json:"autoStart"`
 	BridgeEnabled    bool             `json:"bridgeEnabled"`    // statusline 桥接（默认启用）
 	RecentDirs       []string         `json:"recentDirs"`       // 最近工作目录（≤8，最近在前）
-	LaunchWindowMode string           `json:"launchWindowMode"` // 启动终端窗口模式: show/hide
+	LaunchWindowMode string           `json:"launchWindowMode"` // 启动终端窗口模式: show 显示 / hide 最小化到任务栏
 	EnterToSend      bool             `json:"enterToSend"`      // 回车直接发送（默认 true）；false 时 Shift+Enter 发送
+	LaunchYolo       bool             `json:"launchYolo"`       // 新建实例时使用 bypassPermissions 模式（默认 true）
 }
 
 var currentSettings Settings
@@ -32,8 +33,9 @@ func LoadSettings() error {
 	currentSettings = Settings{
 		ModelLimits:      map[string]int64{},
 		BridgeEnabled:    true,       // 默认启用 statusline 桥接
-		LaunchWindowMode: "hide",     // 默认隐藏窗口启动（不挡视线）
+		LaunchWindowMode: "hide",     // 默认最小化到任务栏（不抢焦点）
 		EnterToSend:      true,       // 默认回车直接发送（Shift+Enter 换行）
+		LaunchYolo:       true,       // 默认 yolo 模式（跳过权限确认）
 	}
 	path, err := configPath()
 	if err != nil {

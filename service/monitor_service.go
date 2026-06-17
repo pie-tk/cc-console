@@ -125,6 +125,16 @@ func (s *MonitorService) GetChatHistory(pid int) (*monitor.ChatHistoryResult, er
 	return &result, nil
 }
 
+// GetCommandSuggestions 返回该实例可用的斜杠命令/技能列表（内置 + 项目 + 用户 + 插件），
+// 供消息框输入 / 时自动补全。pid 找不到会话时 cwd 留空，仅返回内置 + 用户级条目。
+func (s *MonitorService) GetCommandSuggestions(pid int) []monitor.CommandSuggestion {
+	cwd := ""
+	if si, ok := monitor.GetCachedSession(pid); ok {
+		cwd = si.Cwd
+	}
+	return monitor.GetCommandSuggestions(cwd)
+}
+
 // ---- 实例启动 ----
 
 // GetRecentDirs 返回最近工作目录（去重，最多 8 个，最近在前）。
@@ -153,6 +163,7 @@ func (s *MonitorService) PickDirectory() (string, error) {
 // LaunchInstance 在 workdir 用新终端窗口启动 claude，并把 workdir 记入最近目录。
 // workdir 为空时内部弹出原生文件夹选择框；用户取消时返回 ("", nil)（非错误）。
 // 返回 (usedTerminal, error)：前端用 usedTerminal 做 flashFoot 反馈。
+// 窗口模式：show=可见窗口，hide=最小化到任务栏（可点开查看 claude 运行状态/错误）。
 func (s *MonitorService) LaunchInstance(workdir string) (string, error) {
 	if strings.TrimSpace(workdir) == "" {
 		var err error
@@ -229,12 +240,13 @@ type SettingsResult struct {
 	CloseQuits       bool   `json:"closeQuits"`
 	AutoStart        bool   `json:"autoStart"`
 	Version          string `json:"version"`
-	LaunchWindowMode string `json:"launchWindowMode"` // show/minimize/hide
+	LaunchWindowMode string `json:"launchWindowMode"` // show 显示窗口 / hide 最小化到任务栏
 	EnterToSend      bool   `json:"enterToSend"`      // 回车直接发送
+	LaunchYolo       bool   `json:"launchYolo"`       // 新建实例使用 bypassPermissions 模式
 }
 
 // Version 应用版本号。
-const Version = "1.3.2"
+const Version = "1.3.3"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
@@ -242,7 +254,7 @@ func (s *MonitorService) GetSettings() *SettingsResult {
 	auto, _ := monitor.IsAutoStartEnabled()
 	mode := cfg.LaunchWindowMode
 	if mode == "" || mode == "minimize" {
-		mode = "hide" // 默认隐藏；旧的 minimize 设置迁移到 hide（minimize 选项已移除）
+		mode = "hide" // 默认最小化到任务栏；兼容旧配置 minimize 值
 	}
 	return &SettingsResult{
 		CloseQuits:       cfg.CloseQuits,
@@ -250,17 +262,20 @@ func (s *MonitorService) GetSettings() *SettingsResult {
 		Version:          Version,
 		LaunchWindowMode: mode,
 		EnterToSend:      cfg.EnterToSend,
+		LaunchYolo:       cfg.LaunchYolo,
 	}
 }
 
 // SaveSettings 保存设置并同步开机自启状态。launchMode 为启动终端窗口模式（show/minimize/hide）。
 // enterToSend 控制消息框发送键：true=回车发送（Shift+回车换行），false=回车换行（Shift+回车发送）。
-func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool, launchMode string, enterToSend bool) error {
+// launchYolo 控制新建实例是否使用 --permission-mode bypassPermissions。
+func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool, launchMode string, enterToSend bool, launchYolo bool) error {
 	cfg := monitor.GetSettings()
 	cfg.CloseQuits = closeQuits
 	cfg.AutoStart = autoStart
 	cfg.LaunchWindowMode = launchMode
 	cfg.EnterToSend = enterToSend
+	cfg.LaunchYolo = launchYolo
 	if err := monitor.SetAutoStart(autoStart); err != nil {
 		return err
 	}

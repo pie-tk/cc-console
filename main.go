@@ -4,8 +4,10 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
+	"claude-monitor/internal/crashlog"
 	"claude-monitor/internal/monitor"
 )
 
@@ -45,7 +47,21 @@ func main() {
 		}
 	}
 
+	// GUI 路径：初始化崩溃日志，捕获 panic / Go runtime fatal error 堆栈到
+	// ~/.claude-monitor/logs/monitor.log。CLI --list 模式不重定向，保持终端输出正常。
+	crashlog.Setup(monitorLogDir())
+	defer crashlog.Recover()
+
 	runWailsApp()
+}
+
+// monitorLogDir 返回应用日志目录 ~/.claude-monitor/logs（home 不可用时回退临时目录）。
+func monitorLogDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(os.TempDir(), "claude-monitor", "logs")
+	}
+	return filepath.Join(home, ".claude-monitor", "logs")
 }
 
 func runList() {

@@ -216,6 +216,19 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .card-status.idle { color: var(--status-idle); }
 .card-status.unknown { color: var(--status-unknown); }
 .card-model { font-size: 9pt; color: var(--secondary-text); background: var(--tag-bg); padding: 1px 6px; border-radius: 3px; }
+.card-branch {
+  font-size: 8.5pt;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-branch:empty { display: none; }
 .card-duration { font-size: 9pt; color: var(--subtle-text); margin-left: auto; }
 
 .card-topic {
@@ -924,6 +937,15 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   padding: 2px 8px;
   border-radius: 3px;
 }
+.chat-branch {
+  font-size: 9pt;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+.chat-branch:empty { display: none; }
 .flex-spacer { flex: 1; }
 .chat-close-btn {
   background: none;
@@ -1209,4 +1231,198 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .chat-msg-interactive {
   border-left: 3px solid var(--accent) !important;
   background: var(--accent-soft) !important;
+}
+
+/* ===== Claude Code 注解标签格式化（消息内结构化块） ===== */
+/* 纯注解消息（命令/系统/任务事件）：居中事件行，无左右气泡 */
+.chat-msg-event {
+  align-self: center;
+  max-width: 88%;
+  background: transparent;
+  color: var(--subtle-text);
+  font-size: 8.5pt;
+  text-align: left;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* 通用注解块容器 */
+.cc-block { margin: 3px 0; }
+
+/* 斜杠命令卡片 */
+.cc-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--tag-bg);
+  border: 1px solid var(--divider);
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 9pt;
+}
+.cc-cmd-icon { color: var(--accent); font-weight: 600; }
+.cc-cmd code { font-family: inherit; color: var(--window-text); }
+
+/* 命令/Bash 输出块 */
+.chat-msg .cc-cmdout,
+.chat-msg .cc-bashout {
+  white-space: pre-wrap;
+  background: var(--panel-bg);
+  border: 1px solid var(--divider);
+  border-radius: 5px;
+  padding: 6px 9px;
+  margin: 4px 0;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8.5pt;
+  color: var(--secondary-text);
+  max-height: 240px;
+  overflow-y: auto;
+}
+/* 命令/Bash 错误块 */
+.chat-msg .cc-cmderr,
+.chat-msg .cc-basherr {
+  white-space: pre-wrap;
+  background: rgba(212,76,71,0.08);
+  border: 1px solid var(--danger);
+  border-radius: 5px;
+  padding: 6px 9px;
+  margin: 4px 0;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8.5pt;
+  color: var(--danger);
+  max-height: 240px;
+  overflow-y: auto;
+}
+body.dark .cc-cmderr, body.dark .cc-basherr { background: rgba(255,115,105,0.12); }
+
+/* 命令前置提示（caveat） */
+.cc-caveat { font-style: italic; color: var(--warning); margin: 3px 0; }
+
+/* 系统/环境/记忆 注解块（去强调） */
+.cc-system {
+  background: var(--panel-bg);
+  border-left: 3px solid var(--subtle-text);
+  border-radius: 0 5px 5px 0;
+  padding: 5px 10px;
+  color: var(--subtle-text);
+  font-size: 8.5pt;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.cc-label {
+  display: inline-block;
+  font-weight: 600;
+  margin-right: 6px;
+  color: var(--secondary-text);
+  font-size: 8pt;
+}
+
+/* 输出过大已存盘提示 */
+.cc-persisted { color: var(--secondary-text); margin: 3px 0; }
+
+/* 网页摘录引用块 */
+.cc-quote {
+  border-left: 3px solid var(--accent-soft);
+  margin: 5px 0;
+  padding: 3px 12px;
+  color: var(--secondary-text);
+  font-size: 9pt;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+body.dark .cc-quote { border-left-color: var(--accent); }
+
+/* Bash 输入行 */
+.chat-msg .cc-bashin {
+  white-space: pre-wrap;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8.5pt;
+  color: var(--secondary-text);
+  margin: 3px 0;
+}
+
+/* 折叠思考过程 */
+.cc-think { margin: 5px 0; }
+.cc-think > summary {
+  cursor: pointer;
+  color: var(--subtle-text);
+  font-size: 8.5pt;
+  list-style: none;
+}
+.cc-think > summary::-webkit-details-marker { display: none; }
+.cc-think[open] > summary { margin-bottom: 4px; color: var(--secondary-text); }
+
+/* 任务通知 */
+.cc-task {
+  background: var(--panel-bg);
+  border: 1px solid var(--divider);
+  border-radius: 5px;
+  padding: 5px 10px;
+  margin: 3px 0;
+}
+.cc-task-label { color: var(--secondary-text); font-size: 8.5pt; }
+.cc-task-summary { color: var(--secondary-text); margin-top: 2px; font-size: 8.5pt; }
+.cc-task-ok { border-color: var(--success); }
+.cc-task-fail { border-color: var(--danger); }
+
+/* ===== 斜杠命令/技能自动补全下拉 ===== */
+.slash-menu {
+  position: fixed;
+  z-index: 10000; /* 高于 modal-overlay(1000) */
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--window-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  padding: 4px;
+  font-size: 9.5pt;
+  scrollbar-width: thin;
+  scrollbar-color: var(--card-border) transparent;
+}
+.slash-menu.hidden { display: none; }
+.slash-menu::-webkit-scrollbar { width: 5px; }
+.slash-menu::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.slash-item.selected { background: var(--accent-soft); }
+
+.slash-item-name {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.slash-item-type {
+  font-size: 8pt;
+  color: var(--subtle-text);
+  background: var(--tag-bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.slash-item-type.skill { color: var(--secondary-text); }
+.slash-item-type.builtin { color: var(--accent); }
+.slash-item-desc {
+  color: var(--secondary-text);
+  font-size: 8.5pt;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
