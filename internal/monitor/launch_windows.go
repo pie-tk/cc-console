@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+	"unsafe"
 )
 
 // resolveClaudePath 预检 claude 可执行文件是否可用（仅用于启动前的错误提示）。
@@ -52,8 +54,11 @@ func resolveShell() string {
 }
 
 // LaunchClaudeInDir 在 workdir 启动 claude，按 mode 决定终端窗口显示方式：
-//   - "show"：可见窗口（优先 Windows Terminal，回退 PowerShell）
+//   - "show"：可见窗口
 //   - 默认（"hide"/"minimize"）：最小化窗口到任务栏（不抢焦点，可点击查看）
+//
+// show 和 hide 走完全相同的终端选择逻辑（优先 Windows Terminal，回退 PowerShell 控制台），
+// 唯一区别是窗口初始是否最小化。
 //
 // 终端使用 PowerShell（而非 cmd），claude 启动参数由 buildClaudeArgs 控制。
 // 返回终端描述（供前端反馈）。
@@ -74,39 +79,129 @@ func LaunchClaudeInDir(workdir string, mode string) (string, error) {
 		return "", err
 	}
 
-	switch mode {
-	case "show":
-		return launchVisible(abs)
-	default: // "hide" / "minimize" → 最小化启动
-		return launchMinimized(abs)
-	}
+	minimized := mode != "show"
+	return launchClaude(abs, minimized)
 }
 
-// launchVisible 可见窗口启动：优先 Windows Terminal（-- 分隔 wt 选项与命令），回退 PowerShell Start-Process。
-func launchVisible(abs string) (string, error) {
+// launchClaude 统一启动逻辑：优先 Windows Terminal（用户配置的主题配色，与右键"打开终端"一致），
+// 回退经典 PowerShell 控制台。minimized 仅控制窗口初始状态，不影响终端选择。
+func launchClaude(abs string, minimized bool) (string, error) {
 	claudeArgs := buildClaudeArgs()
-	if wt, e := exec.LookPath("wt.exe"); e == nil {
-		// -- 分隔符确保后面的命令被当作命令而非 wt 参数
-		// -ExecutionPolicy Bypass 跳过执行策略提示：用户若把策略设为 AllSigned，
-		// PowerShell 启动时会因加载 PSReadLine 模块的 .ps1xml 弹"不可信发布者"确认框，挡住 claude 启动。
-		shell := resolveShell()
-		cmd := exec.Command(wt, "-d", abs, "--", shell, "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", claudeArgs)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	shell := resolveShell()
+
+	// 优先 Windows Terminal：与用户右键"打开终端"体验一致
+	if wt, err := exec.LookPath("wt.exe"); err == nil {
+		if !minimized {
+			// 直接启动 wt.exe，简单可靠
+			// -- 分隔 wt 选项与命令；CREATENEWPROCESSGROUP 防止 Ctrl+C 波及辅助进程
+			// -ExecutionPolicy Bypass 跳过执行策略提示
+			cmd := exec.Command(wt, "-d", abs, "--", shell, "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", claudeArgs)
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+			}
+			if err := cmd.Start(); err == nil {
+				return "Windows Terminal", nil
+			}
+		} else {
+			// 最小化：先正常启动 wt.exe，再通过 Win32 ShowWindow 最小化窗口。
+			// 不能按 PID 追踪 —— wt.exe 是轻量 launcher，实际窗口由
+			// WindowsTerminal.exe（另一个进程）创建。
+			// 改用窗口类名 diff：启动前快照现有 CASCADIA 窗口，启动后只最小化新窗口。
+			existing := enumerateCascadiaWindows()
+			cmd := exec.Command(wt, "-d", abs, "--", shell, "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", claudeArgs)
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+			}
+			if err := cmd.Start(); err == nil {
+				go minimizeNewCascadiaWindow(existing)
+				return "Windows Terminal", nil
+			}
 		}
-		if err := cmd.Start(); err == nil {
-			return "Windows Terminal", nil
-		}
-		// wt 启动失败则继续回退 PowerShell Start-Process
+		// wt.exe 存在但启动失败 → 回退经典控制台
 	}
-	// 回退：用 PowerShell Start-Process 在独立窗口启动
-	return startPowerShell(abs, "Normal")
+
+	// 回退：经典 PowerShell 控制台（conhost.exe，默认蓝色背景）
+	windowStyle := "Normal"
+	if minimized {
+		windowStyle = "Minimized"
+	}
+	return startPowerShell(abs, windowStyle)
 }
 
-// launchMinimized 最小化窗口启动：用 Start-Process -WindowStyle Minimized，不抢焦点、出现在任务栏。
-// 用户可随时点击任务栏图标查看终端输出（含 claude 启动错误）。
-func launchMinimized(abs string) (string, error) {
-	return startPowerShell(abs, "Minimized")
+// ---- Windows Terminal 最小化辅助（Win32 API）----
+
+const cascadiaClass = "CASCADIA_HOSTING_WINDOW_CLASS"
+
+// isCascadiaWindow 判断窗口是否为 Windows Terminal 主窗口。
+func isCascadiaWindow(hwnd uintptr) bool {
+	var buf [64]uint16
+	procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 64)
+	for i, c := range cascadiaClass {
+		if buf[i] != uint16(c) {
+			return false
+		}
+	}
+	return buf[len(cascadiaClass)] == 0 // null 终止符
+}
+
+// enumerateCascadiaWindows 返回当前所有可见 CASCADIA 窗口句柄集合（用于 diff 出新窗口）。
+func enumerateCascadiaWindows() map[uintptr]bool {
+	set := make(map[uintptr]bool)
+	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		if isCascadiaWindow(hwnd) {
+			vis, _, _ := procIsWindowVisible.Call(hwnd)
+			if vis != 0 {
+				set[hwnd] = true
+			}
+		}
+		return 1 // TRUE，继续枚举
+	})
+	procEnumWindows.Call(cb, 0)
+	return set
+}
+
+// minimizeNewCascadiaWindow 等待并最小化不在 existing 中的新 CASCADIA 窗口。
+//
+// 两阶段策略：
+//  1. 轮询 EnumWindows 找到新出现的 CASCADIA 窗口（最多 2 秒）
+//  2. 反复 SW_MINIMIZE —— Windows Terminal（WinUI 3）在初始化期间会自行
+//     ShowWindow(SW_RESTORE) 覆盖外部最小化，单次调用不够，需多次锤击直到它稳定。
+//
+// 若始终未找到窗口则静默放弃（不影响启动结果）。
+func minimizeNewCascadiaWindow(existing map[uintptr]bool) {
+	// Phase 1: 找到新窗口
+	var target uintptr
+	for range 20 {
+		time.Sleep(100 * time.Millisecond)
+		cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+			if !existing[hwnd] && isCascadiaWindow(hwnd) {
+				vis, _, _ := procIsWindowVisible.Call(hwnd)
+				if vis != 0 {
+					target = hwnd
+					return 0 // FALSE，停止枚举
+				}
+			}
+			return 1 // TRUE，继续枚举
+		})
+		procEnumWindows.Call(cb, 0)
+		if target != 0 {
+			break
+		}
+	}
+	if target == 0 {
+		return
+	}
+
+	// Phase 2: 反复最小化，对抗 WT 自恢复（最多 5 轮，每轮 400ms）
+	const SW_MINIMIZE = 6
+	for range 5 {
+		procShowWindow.Call(target, uintptr(SW_MINIMIZE))
+		time.Sleep(400 * time.Millisecond)
+		vis, _, _ := procIsWindowVisible.Call(target)
+		if vis == 0 {
+			return // 仍然最小化，成功
+		}
+	}
 }
 
 // startPowerShell 在 abs 目录启动新的 PowerShell 窗口运行 claude。
