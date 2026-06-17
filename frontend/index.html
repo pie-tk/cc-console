@@ -102,13 +102,17 @@
           <div class="chat-empty">加载中...</div>
         </div>
       </div>
+      <div id="chat-processing" class="chat-processing hidden">
+        <span class="chat-processing-spin">✻</span>
+        <span class="chat-processing-text">Channeling…</span>
+      </div>
       <div id="chat-waiting" class="chat-waiting hidden">
         <span class="chat-waiting-dot"></span>
         <span>等待你的选择...</span>
       </div>
       <div id="chat-quick-replies" class="chat-quick-replies hidden"></div>
       <div class="chat-input-area">
-        <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="3" maxlength="4000"></textarea>
+        <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="4" maxlength="4000"></textarea>
         <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
       </div>
       <div id="chat-stats" class="chat-stats hidden">

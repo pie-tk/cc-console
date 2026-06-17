@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Settings 持久化到 ~/.claude-monitor.json 的应用设置。
@@ -16,9 +17,15 @@ type Settings struct {
 	LaunchWindowMode string           `json:"launchWindowMode"` // 启动终端窗口模式: show 显示 / hide 最小化到任务栏
 	EnterToSend      bool             `json:"enterToSend"`      // 回车直接发送（默认 true）；false 时 Shift+Enter 发送
 	LaunchYolo       bool             `json:"launchYolo"`       // 新建实例时使用 bypassPermissions 模式（默认 true）
+	WindowWidth      int              `json:"windowWidth"`      // 主窗口宽度（启动恢复用）
+	WindowHeight     int              `json:"windowHeight"`     // 主窗口高度（启动恢复用）
+	WindowMaximised  bool             `json:"windowMaximised"`  // 主窗口上次是否最大化
 }
 
 var currentSettings Settings
+
+// settingsMu 保护 currentSettings 的并发读写（resize 防抖 goroutine 与前端设置面板可能同时访问）。
+var settingsMu sync.RWMutex
 
 func configPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -49,13 +56,12 @@ func LoadSettings() error {
 	return nil
 }
 
-// SaveSettings 将设置写回磁盘。
-func SaveSettings(s Settings) error {
+// writeSettingsToDisk 把设置序列化写回 ~/.claude-monitor.json。
+func writeSettingsToDisk(s Settings) error {
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
-	currentSettings = s
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -63,12 +69,61 @@ func SaveSettings(s Settings) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// GetSettings 返回当前设置（线程安全由调用者保证）。
+// SaveSettings 将设置写回磁盘。
+func SaveSettings(s Settings) error {
+	settingsMu.Lock()
+	currentSettings = s
+	settingsMu.Unlock()
+	return writeSettingsToDisk(s)
+}
+
+// GetSettings 返回当前设置的快照（线程安全）。
 func GetSettings() Settings {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
 	return currentSettings
 }
 
 // IsCloseQuit 返回关闭按钮是否应直接退出。
 func IsCloseQuit() bool {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
 	return currentSettings.CloseQuits
+}
+
+// WindowGeometry 已保存的主窗口几何（宽/高/是否最大化）。Ok=false 表示无有效记录。
+type WindowGeometry struct {
+	Width     int
+	Height    int
+	Maximised bool
+	Ok        bool
+}
+
+// 与主窗口 MinWidth/MinHeight 一致，用于校验保存的几何是否有效（防旧数据/损坏值）。
+const minWindowWidth, minWindowHeight = 660, 420
+
+// GetWindowGeometry 读取已保存的主窗口几何，供启动时恢复窗口大小。
+func GetWindowGeometry() WindowGeometry {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	if currentSettings.WindowWidth >= minWindowWidth && currentSettings.WindowHeight >= minWindowHeight {
+		return WindowGeometry{
+			Width:     currentSettings.WindowWidth,
+			Height:    currentSettings.WindowHeight,
+			Maximised: currentSettings.WindowMaximised,
+			Ok:        true,
+		}
+	}
+	return WindowGeometry{}
+}
+
+// UpdateWindowGeometry 更新主窗口几何并写盘（窗口缩放后由防抖定时器调用）。
+func UpdateWindowGeometry(width, height int, maximised bool) {
+	settingsMu.Lock()
+	currentSettings.WindowWidth = width
+	currentSettings.WindowHeight = height
+	currentSettings.WindowMaximised = maximised
+	s := currentSettings
+	settingsMu.Unlock()
+	_ = writeSettingsToDisk(s)
 }

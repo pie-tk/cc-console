@@ -410,13 +410,18 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 						}
 					case "tool_use":
 						input := string(b.Input)
-						msgs = append(msgs, ChatMessage{
+						cm := ChatMessage{
 							Role:    "tool_use",
 							Content: input,
 							Tool:    b.Name,
 							ToolID:  b.ID,
 							Turn:    turn,
-						})
+						}
+						// Edit 工具：读文件定位修改区域起始行号，供前端 diff 显示真实行号
+						if b.Name == "Edit" {
+							cm.EditStartLine = editStartLine(b.Input)
+						}
+						msgs = append(msgs, cm)
 					}
 				}
 			}
@@ -537,4 +542,46 @@ func extractToolResultContent(raw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 	return string(raw)
+}
+
+// editStartLine 解析 Edit 工具的 input，在目标文件中定位修改区域起始行号（1-based）。
+// Edit 成功后文件已是新版，优先用 new_string 匹配；失败回退 old_string。找不到返回 0。
+func editStartLine(input json.RawMessage) int {
+	var ei struct {
+		FilePath  string `json:"file_path"`
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	}
+	if json.Unmarshal(input, &ei) != nil {
+		return 0
+	}
+	var needles []string
+	if ei.NewString != "" {
+		needles = append(needles, ei.NewString)
+	}
+	if ei.OldString != "" {
+		needles = append(needles, ei.OldString)
+	}
+	return findStartLine(ei.FilePath, needles)
+}
+
+// findStartLine 在 filePath 中查找 needles 中首个出现的字符串，返回其起始行号(1-based)。找不到返回 0。
+func findStartLine(filePath string, needles []string) int {
+	if filePath == "" || len(needles) == 0 {
+		return 0
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0
+	}
+	for _, n := range needles {
+		if n == "" {
+			continue
+		}
+		idx := bytes.Index(data, []byte(n))
+		if idx >= 0 {
+			return 1 + bytes.Count(data[:idx], []byte{'\n'})
+		}
+	}
+	return 0
 }

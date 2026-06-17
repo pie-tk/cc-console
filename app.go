@@ -46,7 +46,9 @@ func runWailsApp() {
 		},
 	})
 
-	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
+	// 读取已保存的窗口几何，恢复用户上次的缩放大小（无记录或损坏时用默认值）
+	geo := monitor.GetWindowGeometry()
+	winOpts := application.WebviewWindowOptions{
 		Title:            "Claude Code 监控",
 		Width:            1040,
 		Height:           680,
@@ -54,7 +56,15 @@ func runWailsApp() {
 		MinHeight:        420,
 		BackgroundColour: application.NewRGB(255, 255, 255),
 		URL:              "/",
-	})
+	}
+	if geo.Ok && !geo.Maximised {
+		winOpts.Width = geo.Width
+		winOpts.Height = geo.Height
+	}
+	win := app.Window.NewWithOptions(winOpts)
+	if geo.Ok && geo.Maximised {
+		win.Maximise() // 上次是最大化：直接最大化，避免先用全屏尺寸创建再拉伸的闪烁
+	}
 
 	svc.SetApp(app, win)
 
@@ -88,6 +98,23 @@ func runWailsApp() {
 		}
 		win.Hide()
 		event.Cancel()
+	})
+
+	// ---- 窗口缩放记忆：拖动边缘调整大小后防抖保存，下次启动恢复 ----
+	// 注意：窗口事件回调运行在主线程，win.Width() 内部是 InvokeSync（主线程同步），
+	// 若直接在回调里调用会造成主线程重入死锁；改用 time.AfterFunc 把取值放到独立 goroutine。
+	var geoTimer *time.Timer
+	win.RegisterHook(events.Common.WindowDidResize, func(event *application.WindowEvent) {
+		if geoTimer != nil {
+			geoTimer.Stop()
+		}
+		geoTimer = time.AfterFunc(400*time.Millisecond, func() {
+			w, h := win.Width(), win.Height()
+			if w == 0 || h == 0 {
+				return // 窗口已销毁（退出流程中），丢弃脏值避免覆盖上次尺寸
+			}
+			monitor.UpdateWindowGeometry(w, h, win.IsMaximised())
+		})
 	})
 
 	// ---- 定时更新托盘 tooltip ----

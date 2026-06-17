@@ -32,6 +32,41 @@ let chatHistoryHash = 0;
 let chatRefreshTimer = null;
 let lastChatMessages = [];      // 最近一次渲染的消息，供未变 hash 时重新评估交互按钮
 let lastReplySignature = '';    // 上次注入的快速回复签名，避免每秒重复 innerHTML 重写
+// 处理中/完成指示器（复刻 Claude Code 风格）：处理中随机切换动词（Channeling…），
+// 完成时显示「动词过去式 + 用时」（Crunched for 33s）。状态机：idle → processing → completed → idle。
+let procState = 'idle';        // idle | processing | completed
+let procStartTime = 0;         // 本轮处理开始时刻(ms)，用于完成时计算用时
+let procVerbIdx = 0;           // 当前 spinner 动词下标
+let procHasBeenBusy = false;   // 本轮是否经历过 busy（用于区分「处理完成」与「乐观窗口内尚未 busy」）
+let procOptimistic = false;    // 发送后乐观窗口（status 变 busy 前的空窗）
+let procCompletionText = '';   // 完成态文案
+let verbSwitchTimer = null;    // 处理中动词切换定时器
+let completionTimer = null;    // 完成态停留定时器
+let optimisticTimer = null;    // 乐观窗口兜底定时器
+
+// Claude Code 风格的 spinner 动词（处理中 gerund + 完成时 past）。取自其动词表的常见词。
+var SPINNER_VERBS = [
+  { ing: 'Channeling',   ed: 'Channelled' },
+  { ing: 'Pondering',    ed: 'Pondered' },
+  { ing: 'Crunching',    ed: 'Crunched' },
+  { ing: 'Working',      ed: 'Worked' },
+  { ing: 'Thinking',     ed: 'Thought' },
+  { ing: 'Synthesizing', ed: 'Synthesized' },
+  { ing: 'Deliberating', ed: 'Deliberated' },
+  { ing: 'Ruminating',   ed: 'Ruminated' },
+  { ing: 'Musing',       ed: 'Mused' },
+  { ing: 'Conjuring',    ed: 'Conjured' },
+  { ing: 'Noodling',     ed: 'Noodled' },
+  { ing: 'Distilling',   ed: 'Distilled' },
+  { ing: 'Cogitating',   ed: 'Cogitated' },
+  { ing: 'Brewing',      ed: 'Brewed' },
+  { ing: 'Plotting',     ed: 'Plotted' },
+  { ing: 'Scheming',     ed: 'Schemed' },
+  { ing: 'Dreaming',     ed: 'Dreamed' },
+  { ing: 'Processing',   ed: 'Processed' },
+  { ing: 'Analyzing',    ed: 'Analyzed' },
+  { ing: 'Cooking',      ed: 'Cooked' },
+];
 // AskUserQuestion 多问追踪:同一 tool_use 内多个问题按序展示。
 // 活跃会话 jsonl 滞后(答完一题 jsonl 不更新),没有外部信号告知「现在问到第几题」,
 // 只能本地追踪——用户在消息框点选一题后推进到下一题。tool_use ID 变化或交互消失则重置。
@@ -392,6 +427,310 @@ function updateCardText(el, inst) {
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// highlightDiff 检测代码是否为 diff 格式，若是则对 +/-/@@ 行着色并返回 HTML；
+// 若不是 diff 则返回空字符串（调用方回退到普通代码块渲染）。
+// code 参数已通过 escHtml 转义。
+function highlightDiff(code) {
+  var lines = code.split('\n');
+  var headers = 0, adds = 0, dels = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var ch = lines[i].charAt(0);
+    var ch2 = lines[i].charAt(1);
+    if (ch === '@' && ch2 === '@') headers++;
+    if (ch === '+' && ch2 !== '+') adds++;
+    if (ch === '-' && ch2 !== '-') dels++;
+  }
+  // 至少 1 个 @@ 头部，或 3 行以上 +/- 才视为 diff
+  if (headers === 0 && adds + dels < 3) return '';
+
+  var result = '';
+  for (var j = 0; j < lines.length; j++) {
+    var line = lines[j];
+    if (/^@@\s+-\d+/.test(line)) {
+      result += '<span class="diff-header">' + line + '</span>\n';
+    } else if (/^---\s/.test(line) || /^\+\+\+\s/.test(line)) {
+      result += '<span class="diff-meta">' + line + '</span>\n';
+    } else if (/^\+/.test(line)) {
+      result += '<span class="diff-add">' + line + '</span>\n';
+    } else if (/^-/.test(line)) {
+      result += '<span class="diff-del">' + line + '</span>\n';
+    } else {
+      result += line + '\n';
+    }
+  }
+  return result.replace(/\n$/, '');
+}
+
+// computeLineDiff 对 old/new 两段文本做逐行 LCS diff，返回 [{type:'same'|'del'|'add', text, ln}]
+// startLine 为修改区域起始行号（1-based，0 表示未知——此时不附带行号）。
+function computeLineDiff(oldStr, newStr, startLine) {
+  var oldLines = oldStr.split('\n');
+  var newLines = newStr.split('\n');
+  var m = oldLines.length, n = newLines.length;
+
+  // LCS DP 表：dp[i][j] = oldLines[0..i-1] 与 newLines[0..j-1] 的最长公共子序列长度
+  var dp = new Array(m + 1);
+  for (var i = 0; i <= m; i++) {
+    dp[i] = new Array(n + 1);
+    for (var j = 0; j <= n; j++) {
+      if (i === 0 || j === 0) {
+        dp[i][j] = 0;
+      } else if (oldLines[i - 1] === newLines[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  // 回溯构造 diff 序列（正序）
+  var result = [];
+  var i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      result.push({ type: 'same', text: oldLines[i - 1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.push({ type: 'add', text: newLines[j - 1] });
+      j--;
+    } else {
+      result.push({ type: 'del', text: oldLines[i - 1] });
+      i--;
+    }
+  }
+  result.reverse();
+
+  // 正向计算每行对应的文件行号：del 用 oldLine，add/same 用 newLine（均从 startLine 起）
+  if (startLine > 0) {
+    var oldLine = startLine, newLine = startLine;
+    for (var k = 0; k < result.length; k++) {
+      var r = result[k];
+      if (r.type === 'del') { r.ln = oldLine; oldLine++; }
+      else if (r.type === 'add') { r.ln = newLine; newLine++; }
+      else { r.ln = newLine; oldLine++; newLine++; }
+    }
+  }
+  return result;
+}
+
+// renderToolCallBody 渲染工具调用的输入体。对 Edit/Write 工具提取 old_string/new_string
+// 并渲染为增删行颜色标记（红删绿增）；其他工具回退为 JSON 原文。
+// startLine 为 Edit 修改区域起始行号（来自后端定位），>0 时 diff 左侧显示行号列。
+function renderToolCallBody(tool, rawContent, startLine) {
+  if (tool !== 'Edit' && tool !== 'Write') {
+    return '<div class="chat-msg-tool-input">' + escHtml(rawContent) + '</div>';
+  }
+
+  // 尝试解析 JSON 输入
+  var input;
+  try { input = JSON.parse(rawContent); } catch (e) { input = null; }
+  if (!input) {
+    return '<div class="chat-msg-tool-input">' + escHtml(rawContent) + '</div>';
+  }
+
+  // 文件路径头部
+  var html = '';
+  if (input.file_path) {
+    html += '<div class="tool-edit-file">📄 ' + escHtml(input.file_path) + '</div>';
+  }
+
+  // Write 工具：新建/覆盖整个文件，不直接平铺全部内容，给出提示并可折叠查看
+  if (tool === 'Write' && input.content) {
+    var lineCount = input.content.split('\n').length;
+    var byteLen = input.content.length;
+    html += '<div class="tool-edit-hint">📝 新建文件 · ' + lineCount + ' 行 · ' + byteLen + ' 字符</div>';
+    var wc = input.content;
+    if (wc.length > 8000) wc = wc.slice(0, 8000) + '\n...（内容过长，已截断）';
+    html += '<details class="tool-edit-details"><summary>查看文件内容</summary>'
+      + '<div class="tool-edit-diff"><pre><code>' + escHtml(wc) + '</code></pre></div></details>';
+    return html;
+  }
+
+  // Edit 工具：逐行 LCS diff，只标真正变化的行
+  var oldStr = input.old_string || '';
+  var newStr = input.new_string || '';
+  if (!oldStr && !newStr) {
+    html += '<div class="chat-msg-tool-input">' + escHtml(rawContent) + '</div>';
+    return html;
+  }
+
+  var changes = computeLineDiff(oldStr, newStr, startLine || 0);
+  var diff = '';
+  for (var k = 0; k < changes.length; k++) {
+    var ch = changes[k];
+    var cls = ch.type === 'del' ? 'diff-del' : (ch.type === 'add' ? 'diff-add' : 'diff-same');
+    var sign = ch.type === 'del' ? '-' : (ch.type === 'add' ? '+' : ' ');
+    var lnHTML = ch.ln ? '<span class="diff-ln">' + ch.ln + '</span>' : '';
+    diff += '<div class="' + cls + '">' + lnHTML
+      + '<span class="diff-ct">' + sign + ' ' + escHtml(ch.text || ' ') + '</span></div>';
+  }
+  html += '<div class="tool-edit-diff' + (startLine ? ' has-linenr' : '') + '">' + diff + '</div>';
+  return html;
+}
+
+// ---- Markdown 格式化 ----
+// buildTable 把 GFM 表格的若干原始行（已转义）渲染成 <table>。
+// rows[0]=表头行，rows[1]=分隔行（决定对齐），其余=数据行。
+function buildTable(rows) {
+  function parseCells(rowLine) {
+    var inner = rowLine.replace(/^\|/, '').replace(/\|\s*$/, '');
+    return inner.split('|').map(function(c) { return c.trim(); });
+  }
+  function alignOf(s) {
+    if (/^:-+$/.test(s)) return 'left';
+    if (/^-+:$/.test(s)) return 'right';
+    if (/^:-+:$/.test(s)) return 'center';
+    return '';
+  }
+  var header = parseCells(rows[0]);
+  var aligns = parseCells(rows[1]).map(alignOf);
+  function cellTag(tag, content, idx) {
+    var a = aligns[idx];
+    var style = a ? ' style="text-align:' + a + '"' : '';
+    return '<' + tag + style + '>' + (content == null ? '' : content) + '</' + tag + '>';
+  }
+  var t = '<table class="md-table"><thead><tr>';
+  header.forEach(function(c, idx) { t += cellTag('th', c, idx); });
+  t += '</tr></thead><tbody>';
+  var ncols = header.length;
+  for (var r = 2; r < rows.length; r++) {
+    var cells = parseCells(rows[r]);
+    t += '<tr>';
+    for (var c = 0; c < ncols; c++) { t += cellTag('td', cells[c], c); }
+    t += '</tr>';
+  }
+  t += '</tbody></table>';
+  return t;
+}
+
+// renderMarkdown 把文本中的常见 markdown 语法转为 HTML。
+// 调用方负责保证输入不含未闭合的 Claude Code 注解标签（即注解标签已先由
+// formatRichContent 处理完毕）。函数内部先做 HTML 转义，再转换 markdown。
+function renderMarkdown(text) {
+  if (!text) return '';
+  var html = escHtml(text);
+
+  // 保护围栏代码块：```lang\n...\n```，避免内部 **、* 等被误转
+  var fenced = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+    var idx = fenced.length;
+    var content = code.replace(/\n$/, '');
+    var diffHTML;
+    // diff/patch 语言标记，或自动检测内容是否匹配 diff 格式
+    if (lang === 'diff' || lang === 'patch') {
+      diffHTML = highlightDiff(content);
+    } else if (!lang) {
+      diffHTML = highlightDiff(content); // 无语言标记时自动检测
+    }
+    if (diffHTML) {
+      fenced.push('<pre class="diff-block"><code>' + diffHTML + '</code></pre>');
+    } else {
+      fenced.push('<pre><code' + (lang ? ' class="language-' + lang + '"' : '') + '>' + content + '</code></pre>');
+    }
+    return '\x00F' + idx + '\x00';
+  });
+
+  // 保护行内代码：`...`
+  var inlined = [];
+  html = html.replace(/`([^`\n]+)`/g, function(_, code) {
+    var idx = inlined.length;
+    inlined.push('<code>' + code + '</code>');
+    return '\x00I' + idx + '\x00';
+  });
+
+  // 粗体 + 斜体（粗斜体优先，避免 *** 被错拆）
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>');
+
+  // 链接 [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // 逐行处理块级元素，构建为单个字符串避免 out.join 引入多余 \n
+  var lines = html.split('\n');
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var m;
+
+    if ((m = /^### (.+)$/.exec(line)))  { out.push('<h3>' + m[1] + '</h3>'); continue; }
+    if ((m = /^## (.+)$/.exec(line)))   { out.push('<h2>' + m[1] + '</h2>'); continue; }
+    if ((m = /^# (.+)$/.exec(line)))    { out.push('<h1>' + m[1] + '</h1>'); continue; }
+
+    if (/^(---|\*\*\*|___)$/.test(line)) { out.push('<hr>'); continue; }
+
+    // 表格：首行 |...| + 第二行分隔行 |---|---|
+    if (/^\|.+\|\s*$/.test(line) && i + 1 < lines.length &&
+        /^\|[\s:?|-]+$/.test(lines[i + 1]) && /-/.test(lines[i + 1])) {
+      var trows = [line, lines[i + 1]];
+      var ti = i + 2;
+      while (ti < lines.length && /^\|.+\|\s*$/.test(lines[ti])) {
+        trows.push(lines[ti]);
+        ti++;
+      }
+      out.push(buildTable(trows));
+      i = ti - 1;
+      continue;
+    }
+
+    // 无序列表：- / * 开头，连续行拼成单个 <ul> 字符串
+    if ((m = /^[\-*] (.+)$/.exec(line))) {
+      var ul = '<ul><li>' + m[1] + '</li>';
+      i++;
+      while (i < lines.length && (m = /^[\-*] (.+)$/.exec(lines[i]))) {
+        ul += '<li>' + m[1] + '</li>';
+        i++;
+      }
+      ul += '</ul>';
+      out.push(ul);
+      i--;
+      continue;
+    }
+
+    // 有序列表：1. 开头，连续行拼成单个 <ol> 字符串
+    if ((m = /^\d+\. (.+)$/.exec(line))) {
+      var ol = '<ol><li>' + m[1] + '</li>';
+      i++;
+      while (i < lines.length && (m = /^\d+\. (.+)$/.exec(lines[i]))) {
+        ol += '<li>' + m[1] + '</li>';
+        i++;
+      }
+      ol += '</ol>';
+      out.push(ol);
+      i--;
+      continue;
+    }
+
+    // 引用块：>  开头（已转义为 &gt;），连续行拼成单个 <blockquote> 字符串
+    if ((m = /^&gt; ?(.+)$/.exec(line))) {
+      var bq = '<blockquote>' + m[1];
+      i++;
+      while (i < lines.length && (m = /^&gt; ?(.+)$/.exec(lines[i]))) {
+        bq += '<br>' + m[1];
+        i++;
+      }
+      bq += '</blockquote>';
+      out.push(bq);
+      i--;
+      continue;
+    }
+
+    out.push(line);
+  }
+  html = out.join('\n');
+
+  // 清理块级标签前后的多余换行——chat-msg 有 white-space:pre-wrap，
+  // 这些 \n 会被渲染为额外的空行，而块级元素本身就换行
+  html = html.replace(/(^|\n)(<(?:h[1-6]|ul|ol|blockquote|hr|div)\b[^>]*>)/g, '$2');
+  html = html.replace(/(<\/(?:h[1-6]|ul|ol|blockquote|div)>)(\n|$)/g, '$1');
+
+  // 还原代码块
+  html = html.replace(/\x00F(\d+)\x00/g, function(_, idx) { return fenced[+idx]; });
+  html = html.replace(/\x00I(\d+)\x00/g, function(_, idx) { return inlined[+idx]; });
+
+  return html;
+}
+
 // ---- Claude Code 注解标签格式化 ----
 // Claude Code 在消息文本里嵌入伪 XML 注解（斜杠命令、系统提示、任务通知、摘录等），
 // 直接显示尖括号原文很突兀。formatRichContent 把已知标签渲染成带样式的结构化块，
@@ -448,7 +787,7 @@ function renderBlock(name, content) {
   case 'cmdout': return '<pre class="cc-cmdout">' + escHtml(body) + '</pre>';
   case 'cmderr': return '<pre class="cc-cmderr">' + escHtml(body) + '</pre>';
   case 'cmdcaveat': return '<div class="cc-caveat">⚠ ' + escHtml(body) + '</div>';
-  case 'system': return '<div class="cc-block cc-system"><span class="cc-label">系统</span>' + escHtml(body) + '</div>';
+  case 'system': return '<div class="cc-block cc-system"><span class="cc-label">系统</span>' + renderMarkdown(body) + '</div>';
   case 'env': return '<div class="cc-block cc-system"><span class="cc-label">环境</span>' + escHtml(body) + '</div>';
   case 'memory': return '<div class="cc-block cc-system"><span class="cc-label">记忆</span>' + formatRichContent(content) + '</div>';
   case 'task': return renderTask(content);
@@ -479,21 +818,21 @@ function formatRichContent(text) {
     // 命令卡片标记
     if (text.charAt(i) === '\u0000' && text.substr(i, 4) === '\u0000CMD') {
       var end = text.indexOf('\u0000', i + 4);
-      if (end < 0) { html += escHtml(text.slice(i)); break; }
+      if (end < 0) { html += renderMarkdown(text.slice(i)); break; }
       try { html += renderCommandCard(JSON.parse(text.slice(i + 4, end))); } catch (e) { /* 跳过 */ }
       i = end + 1;
       continue;
     }
     var lt = text.indexOf('<', i);
-    if (lt < 0) { html += escHtml(text.slice(i)); break; }
+    if (lt < 0) { html += renderMarkdown(text.slice(i)); break; }
     var m = tagRe.exec(text.slice(lt));
     if (!m || !CC_BLOCK_TAGS[m[1]]) {
       // 非已知标签（含代码里的 <）：当普通文本，仅吃掉这个 '<' 继续扫描
-      html += escHtml(text.slice(i, lt + 1));
+      html += renderMarkdown(text.slice(i, lt + 1));
       i = lt + 1;
       continue;
     }
-    html += escHtml(text.slice(i, lt)); // 前导文本
+    html += renderMarkdown(text.slice(i, lt)); // 前导文本
     var name = m[1];
     var afterOpen = lt + m[0].length;
     var close = '</' + name + '>';
@@ -787,6 +1126,7 @@ window.openChatPanel = async function(pid) {
   chatHistoryHash = 0;
   lastChatMessages = [];
   lastReplySignature = '';
+  procReset();
   loadSlashSuggestions(pid); // 预载斜杠命令/技能供消息框补全
   // 注意:不重置 ask 多问追踪状态——用户可能关闭面板后重开,中途的多问进度
   // (askQuestionIndex)应保留;重置交给 injectInteractivePrompts 在 tool_use ID 变化时做。
@@ -824,10 +1164,125 @@ window.openChatPanel = async function(pid) {
   }, 2000);
 };
 
+// ---- 处理中/完成指示器状态机（Claude Code 风格 spinner） ----
+
+// 把毫秒格式化为 Claude Code 风格用时：< 60s → "33s"，否则 → "2m 34s"。
+function procFormatDuration(ms) {
+  var s = Math.max(1, Math.round(ms / 1000));
+  if (s < 60) return s + 's';
+  var m = Math.floor(s / 60);
+  return m + 'm ' + (s % 60) + 's';
+}
+
+function procClearTimers() {
+  if (verbSwitchTimer) { clearTimeout(verbSwitchTimer); verbSwitchTimer = null; }
+  if (completionTimer) { clearTimeout(completionTimer); completionTimer = null; }
+  if (optimisticTimer) { clearTimeout(optimisticTimer); optimisticTimer = null; }
+}
+
+function procRandomVerbIdx() { return Math.floor(Math.random() * SPINNER_VERBS.length); }
+
+// startProcessing：进入处理中态，开始计时 + 随机选动词 + 定期切换。
+function startProcessing() {
+  procStartTime = Date.now();
+  procVerbIdx = procRandomVerbIdx();
+  procState = 'processing';
+  procHasBeenBusy = false;
+  procRender();
+  procScheduleVerbSwitch();
+}
+
+// 处理中每 3.5s 随机换一个动词，贴近 Claude Code 动效。
+function procScheduleVerbSwitch() {
+  if (verbSwitchTimer) clearTimeout(verbSwitchTimer);
+  verbSwitchTimer = setTimeout(function() {
+    if (procState !== 'processing') return;
+    var next = procRandomVerbIdx();
+    if (next === procVerbIdx) next = (next + 1) % SPINNER_VERBS.length;
+    procVerbIdx = next;
+    procRender();
+    procScheduleVerbSwitch();
+  }, 3500);
+}
+
+// completeProcessing：进入完成态，显示「动词过去式 + 用时」，停留 4s 后消失。
+function completeProcessing() {
+  if (completionTimer) clearTimeout(completionTimer);
+  if (verbSwitchTimer) { clearTimeout(verbSwitchTimer); verbSwitchTimer = null; }
+  var dur = procFormatDuration(Date.now() - procStartTime);
+  procCompletionText = SPINNER_VERBS[procVerbIdx].ed + ' for ' + dur;
+  procState = 'completed';
+  procRender();
+  completionTimer = setTimeout(function() {
+    procState = 'idle';
+    procRender();
+  }, 4000);
+}
+
+// procReset：清空所有状态与定时器，隐藏指示器。
+function procReset() {
+  procClearTimers();
+  procState = 'idle';
+  procOptimistic = false;
+  procHasBeenBusy = false;
+  procRender();
+}
+
+// showProcessingOptimistic：发送消息后立即乐观进入处理中态（status 变 busy 前的空窗）。
+function showProcessingOptimistic() {
+  procOptimistic = true;
+  if (optimisticTimer) clearTimeout(optimisticTimer);
+  optimisticTimer = setTimeout(function() { procOptimistic = false; procUpdate(); }, 30000);
+  startProcessing();
+}
+
+// procRender：按当前状态刷新指示器 DOM。
+function procRender() {
+  var el = document.getElementById('chat-processing');
+  if (!el) return;
+  var wasNearBottom = isChatNearBottom();
+  if (procState === 'idle') { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.classList.toggle('completed', procState === 'completed');
+  var textEl = el.querySelector('.chat-processing-text');
+  if (procState === 'processing') {
+    if (textEl) textEl.textContent = SPINNER_VERBS[procVerbIdx].ing + '…';
+  } else {
+    if (textEl) textEl.textContent = procCompletionText;
+  }
+  // 仅在用户已在底部时跟随，避免打断查看历史
+  if (wasNearBottom) {
+    var body = document.querySelector('.chat-body');
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+}
+
+// procUpdate：每秒由 renderChatStats 调用，驱动 idle↔processing↔completed 状态机。
+function procUpdate() {
+  var el = document.getElementById('chat-processing');
+  if (!el) return;
+  if (chatPanelPid === null) { procReset(); return; }
+  var meta = instanceMeta[chatPanelPid];
+  if (!meta) { procReset(); return; } // 实例已退出
+  var busy = meta.status === 'busy';
+  if (busy) {
+    procHasBeenBusy = true;
+    if (procState !== 'processing') startProcessing(); // 非用户触发的处理也开始计时
+  } else if (procState === 'processing') {
+    if (procHasBeenBusy) {
+      completeProcessing(); // 经历 busy 后空闲 → 完成，显示用时
+    } else if (!procOptimistic) {
+      procReset(); // 乐观窗口已过且从未 busy → 放弃
+    }
+    // 否则：乐观窗口内尚未 busy，继续显示 processing
+  }
+}
+
 // renderChatStats 渲染聊天面板底部 context/tokens 信息条，复用卡片的显示函数与配色。
 function renderChatStats(pid) {
   var statsEl = document.getElementById("chat-stats");
   if (!statsEl) return;
+  procUpdate(); // 放在最前，确保 early-return（实例退出）时也能更新处理中指示器
   if (pid === null) { statsEl.classList.add("hidden"); return; }
   var inst = instanceMeta[pid];
   if (!inst) { statsEl.classList.add("hidden"); return; } // 实例数据未就绪/已退出
@@ -857,17 +1312,27 @@ function renderChatStats(pid) {
     branchEl.textContent = br ? ("🌿 " + br) : "";
     branchEl.style.display = br ? "" : "none";
   }
+
+  // 模型：每秒刷新，跟随 /model 切换（openChatPanel 只在打开瞬间设一次，这里补刷新）
+  var modelEl = document.getElementById("chat-model");
+  if (modelEl) {
+    var mdl = inst.model || "";
+    modelEl.textContent = mdl;
+    modelEl.style.display = mdl ? "" : "none";
+  }
 }
 
 window.closeChatPanel = function() {
   document.getElementById("chat-overlay").classList.add("hidden");
   document.getElementById("chat-waiting").classList.add("hidden");
   document.getElementById("chat-quick-replies").classList.add("hidden");
+  document.getElementById("chat-processing").classList.add("hidden");
   hideSlash();
   chatPanelPid = null;
   chatHistoryHash = 0;
   lastChatMessages = [];
   lastReplySignature = '';
+  procReset();
   // 不重置 ask 多问追踪(保留中途进度,重开面板可续上)
   if (chatRefreshTimer) { clearInterval(chatRefreshTimer); chatRefreshTimer = null; }
 };
@@ -894,6 +1359,14 @@ async function refreshChatMessages(pid) {
     var msgEl = document.getElementById("chat-messages");
     msgEl.innerHTML = '<div class="chat-empty">加载失败: ' + (e && e.message ? e.message : String(e)) + '</div>';
   }
+}
+
+// isChatNearBottom 判断聊天面板是否已滚到底部附近（< 80px）。
+// 用于决定自动滚动跟随最新内容——用户在查看历史时不打断。
+function isChatNearBottom() {
+  var body = document.querySelector(".chat-body");
+  if (!body) return true;
+  return body.scrollHeight - body.scrollTop - body.clientHeight < 80;
 }
 
 function renderChatMessages(messages) {
@@ -923,7 +1396,7 @@ function renderChatMessages(messages) {
     case 'tool_use':
       html += '<div class="chat-msg chat-msg-tool">'
         + '<span class="chat-msg-label">🔧 调用工具: ' + escHtml(m.tool || '') + '</span>'
-        + '<div class="chat-msg-tool-input">' + escHtml(m.content || '') + '</div>'
+        + renderToolCallBody(m.tool, m.content || '', m.editStartLine || 0)
         + '</div>';
       break;
     case 'tool_result':
@@ -939,12 +1412,18 @@ function renderChatMessages(messages) {
   if (messages.length === 0) {
     html = '<div class="chat-empty">✨ 发送第一条消息，开始对话吧</div>';
   }
+  // 重建前记录滚动状态：仅在用户原本就在底部附近时才跟随到底，否则保留原位置（不打断查看历史）
+  var body = container.parentNode;
+  var wasNearBottom = isChatNearBottom();
+  var prevScrollTop = body ? body.scrollTop : 0;
   container.innerHTML = html;
   // 检测交互式提示并注入快速回复按钮
   injectInteractivePrompts(messages);
-  // 滚动到底部
-  var body = container.parentNode;
-  body.scrollTop = body.scrollHeight;
+  if (wasNearBottom) {
+    body.scrollTop = body.scrollHeight;
+  } else if (body) {
+    body.scrollTop = prevScrollTop; // 新消息追加在末尾，保持原位置仍指向之前的内容
+  }
 }
 
 window.sendChatMessage = async function() {
@@ -970,6 +1449,8 @@ window.sendChatMessage = async function() {
     container.insertAdjacentHTML("beforeend", optHTML);
     var body = container.parentNode;
     body.scrollTop = body.scrollHeight;
+    // 立即显示「处理中」动效（乐观），status 变 busy 后接管
+    showProcessingOptimistic();
     // 立即刷新 + 2 秒后再刷新，尽快捕获 AI 回复
     refreshChatMessages(chatPanelPid);
     setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
@@ -1101,6 +1582,22 @@ function buildAskButtons(question) {
   return btns;
 }
 
+// NO_CONFIRM_TOOLS：Claude Code 默认自动批准、无需用户权限确认的工具。
+// 这些工具 tool_use 未配对 tool_result 时只是「执行中」，不应误判为权限等待。
+var NO_CONFIRM_TOOLS = {
+  // 只读 / 查询
+  'Read': 1, 'Grep': 1, 'Glob': 1, 'LS': 1, 'LSP': 1, 'NotebookRead': 1,
+  'WebSearch': 1, 'WebFetch': 1,
+  // 任务管理（自动批准）
+  'TodoWrite': 1, 'Task': 1, 'Agent': 1,
+  'TaskCreate': 1, 'TaskUpdate': 1, 'TaskGet': 1, 'TaskList': 1,
+  'TaskOutput': 1, 'TaskStop': 1,
+  // 定时任务（内部）
+  'ScheduleWakeup': 1, 'CronCreate': 1, 'CronDelete': 1, 'CronList': 1,
+  // 交互类（已有专门处理，不走 perm 分支）
+  'EnterPlanMode': 1, 'ExitPlanMode': 1, 'AskUserQuestion': 1,
+};
+
 // detectInteraction 基于 messages 结构判定 Claude Code 当前的交互暂停点。
 // 只识别 tool 层的真实选择场景——Claude Code 的选择 UI 由主程序在 tool 执行前渲染,
 // 永远不会出现在 assistant 的 text 里,因此完全不看文本内容,杜绝「是否」「(y/n)」之类的误判。
@@ -1173,6 +1670,10 @@ function detectInteraction(messages) {
     } catch (e) { /* 解析失败则落到下方通用权限/选择处理 */ }
   }
 
+  // 已知不需要权限确认的工具（只读/自动批准/内部交互类）→ 不显示按钮。
+  // 这类工具 tool_use 未配对只是「执行中」，结果落盘前的空窗不该被误判为权限等待。
+  if (NO_CONFIRM_TOOLS[lastToolUse.tool]) return null;
+
   // 其他 tool_use 挂起 → 工具权限请求(Claude Code 在等用户允许/拒绝)
   return {
     kind: 'perm',
@@ -1220,6 +1721,8 @@ window.sendQuickReply = async function(text) {
     document.getElementById("chat-waiting").classList.add("hidden");
     document.getElementById("chat-quick-replies").classList.add("hidden");
     lastReplySignature = '';
+    // 立即显示「处理中」动效（乐观），status 变 busy 后接管
+    showProcessingOptimistic();
     // 快速刷新
     refreshChatMessages(chatPanelPid);
     setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
