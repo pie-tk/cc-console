@@ -6,17 +6,18 @@ vars:
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
   VERSION:
     sh: grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/\1/'
-  ISCC: "C:\\Users\\PIE TK\\AppData\\Local\\Programs\\Inno Setup 6\\ISCC.exe"
+  ISCC: "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"
 
 tasks:
   build:
-    summary: Builds the application and installer
+    summary: Builds the application, installer, and updater artifacts
     cmds:
-      - cd frontend && npm run build
-      - go build -ldflags="-H windowsgui -s -w" -o {{.APP_NAME}}.exe .
-      - go build -ldflags="-s -w" -o {{.APP_NAME}}-sl.exe ./cmd/slhook
-      - cp cmd/slhook/bridge.mjs bridge.mjs
-      - task: setup
+      - bash ./build.sh
+
+  release-build:
+    summary: Builds the application and required updater release assets
+    cmds:
+      - bash ./build.sh --release
 
   setup:
     summary: Builds the Inno Setup installer

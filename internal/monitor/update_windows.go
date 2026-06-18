@@ -14,9 +14,9 @@ import (
 	"time"
 )
 
-// DownloadAndReplace 下载新版本安装包，静默运行完成自替换。
+// DownloadAndReplace 下载新版本安装包，校验 minisign 签名后静默运行完成自替换。
 // 不再自行 rename/copy，由 Inno Setup 安装程序负责替换文件并重启应用。
-func DownloadAndReplace(downloadURL string, onProgress func(downloaded, total int64)) error {
+func DownloadAndReplace(downloadURL, signature string, onProgress func(downloaded, total int64)) error {
 	curExe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("获取当前程序路径失败: %w", err)
@@ -121,6 +121,22 @@ func DownloadAndReplace(downloadURL string, onProgress func(downloaded, total in
 	if !isValidPE(tmpSetup) {
 		os.Remove(tmpSetup)
 		return fmt.Errorf("下载文件校验失败: 不是有效的可执行文件")
+	}
+
+	// minisign 签名校验：用嵌入公钥验证下载包，防止 CDN/中间人篡改。
+	pubKey, err := signingPublicKey()
+	if err != nil {
+		os.Remove(tmpSetup)
+		return err
+	}
+	data, err := os.ReadFile(tmpSetup)
+	if err != nil {
+		os.Remove(tmpSetup)
+		return fmt.Errorf("读取下载文件失败: %w", err)
+	}
+	if err := VerifyMinisign(pubKey, signature, data); err != nil {
+		os.Remove(tmpSetup)
+		return fmt.Errorf("签名校验失败，可能文件已被篡改: %w", err)
 	}
 
 	// 静默运行安装包，指向当前安装目录

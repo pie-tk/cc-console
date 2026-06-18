@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -46,32 +47,63 @@ type statuslineStdin struct {
 	} `json:"cost"`
 }
 
+type hookStdin struct {
+	HookEventName  string `json:"hook_event_name"`
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	Cwd            string `json:"cwd"`
+	ToolName       string `json:"tool_name"`
+}
+
 // liveRecord 是落盘到 live/<pid>.json 的结构,监控器 internal/monitor/bridge.go
 // 用相同 JSON tag 解析。
 type liveRecord struct {
-	Pid            int    `json:"pid"`
-	Ts             int64  `json:"ts"`
-	SessionID      string `json:"sessionId"`
-	SessionName    string `json:"sessionName"`
-	Model          string `json:"model"`
-	ModelID        string `json:"modelId"`
-	Cwd            string `json:"cwd"`
-	TranscriptPath string `json:"transcriptPath"`
-	ContextTokens  int64  `json:"contextTokens"`
-	ContextPercent int    `json:"contextPercent"`
+	Pid            int     `json:"pid"`
+	Ts             int64   `json:"ts"`
+	SessionID      string  `json:"sessionId"`
+	SessionName    string  `json:"sessionName"`
+	Model          string  `json:"model"`
+	ModelID        string  `json:"modelId"`
+	Cwd            string  `json:"cwd"`
+	TranscriptPath string  `json:"transcriptPath"`
+	ContextTokens  int64   `json:"contextTokens"`
+	ContextPercent int     `json:"contextPercent"`
 	ContextLimit   int64   `json:"contextLimit"`
 	Version        string  `json:"version"`
 	CostUsd        float64 `json:"costUsd"`
 	DurationMs     int64   `json:"durationMs"`
 }
 
+type hookState struct {
+	Pid            int    `json:"pid"`
+	Ts             int64  `json:"ts"`
+	SessionID      string `json:"sessionId"`
+	TranscriptPath string `json:"transcriptPath"`
+	Cwd            string `json:"cwd"`
+	LastEvent      string `json:"lastEvent"`
+	Phase          string `json:"phase"`
+	ToolName       string `json:"toolName"`
+	ToolDepth      int    `json:"toolDepth"`
+}
+
 func main() {
 	raw := readStdin()
+	pid := findClaudePID()
+	if pid <= 0 {
+		return
+	}
+	if event := hookEventArg(); event != "" {
+		var stdin hookStdin
+		_ = json.Unmarshal(raw, &stdin)
+		if stdin.HookEventName == "" {
+			stdin.HookEventName = event
+		}
+		writeHookState(pid, &stdin)
+		return
+	}
 	var stdin statuslineStdin
 	_ = json.Unmarshal(raw, &stdin) // 解析失败也无所谓,bridge 仍会链式透传
-	if pid := findClaudePID(); pid > 0 {
-		writeLive(pid, &stdin)
-	}
+	writeLive(pid, &stdin)
 	// 不输出:bridge.mjs 负责链式调用原 statusLine 并产出状态栏。
 }
 
@@ -88,6 +120,15 @@ func readStdin() []byte {
 	case <-time.After(500 * time.Millisecond):
 		return nil
 	}
+}
+
+func hookEventArg() string {
+	for i := 1; i < len(os.Args)-1; i++ {
+		if os.Args[i] == "--hook" {
+			return os.Args[i+1]
+		}
+	}
+	return ""
 }
 
 // writeLive 原子写 live/<pid>.json(先写 .tmp 再 rename,避免监控器读到半截)。
@@ -131,6 +172,9 @@ func writeLive(pid int, s *statuslineStdin) {
 	if rec.Cwd == "" {
 		rec.Cwd = prev.Cwd
 	}
+	if rec.TranscriptPath == "" {
+		rec.TranscriptPath = prev.TranscriptPath
+	}
 	if rec.ContextLimit == 0 {
 		rec.ContextLimit = prev.ContextLimit
 	}
@@ -148,16 +192,62 @@ func writeLive(pid int, s *statuslineStdin) {
 	if rec.ContextPercent == 0 {
 		rec.ContextPercent = prev.ContextPercent
 	}
+	writeJSON(filepath.Join(dir, strconv.Itoa(pid)+".json"), rec)
+}
 
-	data, err := json.Marshal(rec)
-	if err != nil {
+func writeHookState(pid int, s *hookStdin) {
+	dir := hookDir()
+	if dir == "" {
 		return
 	}
-	final := filepath.Join(dir, strconv.Itoa(pid)+".json")
-	tmp := final + ".tmp"
-	if os.WriteFile(tmp, data, 0o644) == nil {
-		_ = os.Rename(tmp, final)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
 	}
+	prev, _ := readPrevHook(pid)
+	rec := hookState{
+		Pid:            pid,
+		Ts:             time.Now().UnixMilli(),
+		SessionID:      firstNonEmpty(s.SessionID, prev.SessionID),
+		TranscriptPath: firstNonEmpty(s.TranscriptPath, prev.TranscriptPath),
+		Cwd:            firstNonEmpty(s.Cwd, prev.Cwd),
+		LastEvent:      firstNonEmpty(s.HookEventName, prev.LastEvent),
+		Phase:          prev.Phase,
+		ToolName:       prev.ToolName,
+		ToolDepth:      prev.ToolDepth,
+	}
+	tool := firstNonEmpty(s.ToolName, prev.ToolName)
+	switch strings.TrimSpace(s.HookEventName) {
+	case "UserPromptSubmit":
+		rec.Phase = "busy"
+		rec.ToolName = ""
+	case "PreToolUse":
+		rec.Phase = "busy"
+		rec.ToolDepth++
+		rec.ToolName = tool
+	case "PostToolUse":
+		if rec.ToolDepth > 0 {
+			rec.ToolDepth--
+		}
+		rec.Phase = "busy"
+		if rec.ToolDepth == 0 {
+			rec.ToolName = ""
+		} else {
+			rec.ToolName = tool
+		}
+	case "Stop":
+		rec.Phase = "idle"
+		rec.ToolDepth = 0
+		rec.ToolName = ""
+	default:
+		if rec.Phase == "" {
+			rec.Phase = "busy"
+		}
+		rec.ToolName = tool
+	}
+	if rec.Phase == "" {
+		rec.Phase = "busy"
+	}
+	writeJSON(filepath.Join(dir, strconv.Itoa(pid)+".json"), rec)
 }
 
 // readPrevLive 读取 pid 现有的 live 记录(供 writeLive 空字段兜底)。
@@ -171,6 +261,34 @@ func readPrevLive(pid int) (liveRecord, error) {
 	return prev, nil
 }
 
+func readPrevHook(pid int) (hookState, error) {
+	var prev hookState
+	data, err := os.ReadFile(filepath.Join(hookDir(), strconv.Itoa(pid)+".json"))
+	if err != nil {
+		return prev, err
+	}
+	_ = json.Unmarshal(data, &prev)
+	return prev, nil
+}
+
+func writeJSON(path string, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, data, 0o644) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
+func firstNonEmpty(v string, fallback string) string {
+	if v != "" {
+		return v
+	}
+	return fallback
+}
+
 // liveDir 返回 ~/.claude-monitor/live/。
 func liveDir() string {
 	home, err := os.UserHomeDir()
@@ -178,4 +296,12 @@ func liveDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".claude-monitor", "live")
+}
+
+func hookDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude-monitor", "hook")
 }

@@ -1,41 +1,140 @@
 #!/usr/bin/env bash
 # build.sh — 一键构建 claude-code-monitor（便携版 exe + Inno Setup 安装包）
-# 用法: ./build.sh
+# 用法:
+#   ./build.sh           # 本地构建，可跳过更新发布元数据
+#   ./build.sh --release # 发布构建，强制生成 .minisig 与 latest.json
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+RELEASE_MODE=0
+if [ "${1:-}" = "--release" ]; then
+  RELEASE_MODE=1
+elif [ -n "${1:-}" ]; then
+  echo "未知参数: $1" >&2
+  echo "用法: ./build.sh [--release]" >&2
+  exit 1
+fi
+
 # 清除 GOROOT 让 go 自动检测（环境变量中带引号的 GOROOT 会导致 go 找不到目录）
 unset GOROOT
 
-echo "=== 1/5 前端构建 ==="
+VERSION=$(grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/\1/')
+MINISIGN_KEY="claude-monitor.sec"
+MINISIGN_KEY_LOCAL="claude-monitor.local.sec"
+
+echo "=== 1/7 前端构建 ==="
 cd frontend && npm run build && cd ..
 
 echo ""
-echo "=== 2/5 嵌入 Windows 图标资源 ==="
+echo "=== 2/7 嵌入 Windows 图标资源 ==="
 # rsrc 用于将 ICO 嵌入 Windows PE 资源（桌面/任务栏图标）
 RSRC="$(go env GOPATH | tr -d '"')/bin/rsrc"
 "$RSRC" -ico icon.ico -o rsrc.syso
 
 echo ""
-echo "=== 3/5 Go 编译便携版 ==="
+echo "=== 3/7 Go 编译便携版 ==="
 go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
 
 echo ""
-echo "=== 3b/5 编译 statusline 桥接 helper ==="
+echo "=== 4/7 编译 statusline 桥接 helper ==="
 go build -ldflags="-s -w" -o claude-monitor-sl.exe ./cmd/slhook
 cp cmd/slhook/bridge.mjs bridge.mjs
 
 echo ""
-echo "=== 4/5 获取版本号 ==="
-VERSION=$(grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/\1/')
+echo "=== 5/7 生成 Inno Setup 安装包 ==="
 echo "Version: $VERSION"
+powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=$VERSION setup.iss"
 
 echo ""
-echo "=== 5/5 生成 Inno Setup 安装包 ==="
-powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=$VERSION setup.iss"
+echo "=== 6/7 处理更新发布元数据 ==="
+if ! command -v minisign >/dev/null 2>&1; then
+  if [ "$RELEASE_MODE" -eq 1 ]; then
+    echo "缺少 minisign：发布构建必须先安装（示例: scoop install minisign）" >&2
+    exit 1
+  fi
+  echo "⚠️  未安装 minisign，跳过签名与 manifest（本地构建允许；发布请用 ./build.sh --release）"
+elif ! command -v jq >/dev/null 2>&1; then
+  if [ "$RELEASE_MODE" -eq 1 ]; then
+    echo "缺少 jq：发布构建必须先安装（示例: scoop install jq）" >&2
+    exit 1
+  fi
+  echo "⚠️  未安装 jq，跳过签名与 manifest（本地构建允许；发布请用 ./build.sh --release）"
+elif [ -f "$MINISIGN_KEY_LOCAL" ]; then
+  echo "使用免密本地签名副本 $MINISIGN_KEY_LOCAL"
+  minisign -S -s "$MINISIGN_KEY_LOCAL" -m claude-monitor-setup.exe -x claude-monitor-setup.exe.minisig -t "claude-monitor v$VERSION"
+  echo "已生成 claude-monitor-setup.exe.minisig"
+
+  echo ""
+  echo "=== 7/7 生成 latest.json manifest ==="
+  # manifest 内嵌两行主签名（untrusted comment + 文件签名），兼容已发布客户端；
+  # 完整四行 .minisig 仍作为独立 release asset 上传，供外部验证工具使用。
+  SIG="$(python - <<'PY'
+from pathlib import Path
+lines = Path('claude-monitor-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
+if len(lines) < 2:
+    raise SystemExit('invalid minisign file')
+print('\n'.join(lines[:2]), end='')
+PY
+)"
+  jq -n \
+    --arg ver "$VERSION" \
+    --arg sig "$SIG" \
+    --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{ version: $ver,
+       notes: ("Release v" + $ver),
+       pub_date: $date,
+       platforms: { "windows-x86_64": {
+         signature: $sig,
+         url: ("https://github.com/pie-tk/claude-code-monitor/releases/download/v" + $ver + "/claude-monitor-setup.exe")
+       } }
+     }' > latest.json
+  echo "已生成 latest.json"
+elif [ -f "$MINISIGN_KEY" ]; then
+  if [ "$RELEASE_MODE" -eq 1 ]; then
+    echo "使用加密私钥 $MINISIGN_KEY 签名（将提示输入口令）"
+    minisign -S -s "$MINISIGN_KEY" -m claude-monitor-setup.exe -x claude-monitor-setup.exe.minisig -t "claude-monitor v$VERSION"
+    echo "已生成 claude-monitor-setup.exe.minisig"
+
+    echo ""
+    echo "=== 7/7 生成 latest.json manifest ==="
+    # manifest 内嵌两行主签名（untrusted comment + 文件签名），兼容已发布客户端；
+    # 完整四行 .minisig 仍作为独立 release asset 上传，供外部验证工具使用。
+    SIG="$(python - <<'PY'
+from pathlib import Path
+lines = Path('claude-monitor-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
+if len(lines) < 2:
+    raise SystemExit('invalid minisign file')
+print('\n'.join(lines[:2]), end='')
+PY
+)"
+    jq -n \
+      --arg ver "$VERSION" \
+      --arg sig "$SIG" \
+      --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{ version: $ver,
+         notes: ("Release v" + $ver),
+         pub_date: $date,
+         platforms: { "windows-x86_64": {
+           signature: $sig,
+           url: ("https://github.com/pie-tk/claude-code-monitor/releases/download/v" + $ver + "/claude-monitor-setup.exe")
+         } }
+       }' > latest.json
+    echo "已生成 latest.json"
+  else
+    echo "⚠️  检测到仅有加密私钥 $MINISIGN_KEY，本地构建跳过签名与 manifest"
+    echo "    若要免交互发布，请先创建免密副本 $MINISIGN_KEY_LOCAL"
+  fi
+fi
 
 echo ""
 echo "=== 完成 ==="
 ls -lh claude-monitor.exe claude-monitor-sl.exe claude-monitor-setup.exe
+if [ -f claude-monitor-setup.exe.minisig ] && [ -f latest.json ]; then
+  echo ""
+  echo "发布产物：claude-monitor-setup.exe / claude-monitor-setup.exe.minisig / latest.json"
+else
+  echo ""
+  echo "本次未生成发布元数据；正式发布前请执行 ./build.sh --release"
+fi

@@ -13,8 +13,9 @@ import (
 
 // MonitorService 是 Wails 服务，所有导出方法自动暴露给前端 JS。
 type MonitorService struct {
-	app    *application.App
-	window *application.WebviewWindow
+	app         *application.App
+	window      *application.WebviewWindow
+	lastRelease *monitor.ReleaseInfo // 缓存最近一次 CheckUpdate 的结果，供下载时取 minisign 签名
 }
 
 // NewMonitorService 创建服务实例。
@@ -58,11 +59,11 @@ func (s *MonitorService) DetectInstances() (*DetectResult, error) {
 		Live:  live,
 		Stale: stale,
 		Stats: monitor.StatsInfo{
-			Online:  len(live),
-			Busy:    monitor.CountStatus(live, "busy"),
-			Idle:    monitor.CountStatus(live, "idle"),
-			Stale:   len(stale),
-			Offline: offline,
+			Online:      len(live),
+			Busy:        monitor.CountStatus(live, "busy"),
+			Idle:        monitor.CountStatus(live, "idle"),
+			Stale:       len(stale),
+			Offline:     offline,
 			TotalTokens: monitor.TotalTokens(live),
 		},
 	}, nil
@@ -108,6 +109,16 @@ func (s *MonitorService) ActPrompt(pid int, text string) error {
 	flat := strings.ReplaceAll(text, "\r\n", " ")
 	flat = strings.ReplaceAll(flat, "\n", " ")
 	return monitor.Injector.SendPrompt(pid, flat)
+}
+
+// ActAskAnswer 向目标实例发送按键 token 序列，用于驱动 AskUserQuestion 的终端选择 UI。
+// actions 是 token 的 JSON 字符串，每个 token 为 {"key":"left|right|up|down|space|tab|enter"}
+// 或 {"text":"abc"}。前端 buildAskSequence 构造，注入层翻译为方向键/空格/回车事件。
+func (s *MonitorService) ActAskAnswer(pid int, actions string) error {
+	if strings.TrimSpace(actions) == "" {
+		return fmt.Errorf("actions 不能为空")
+	}
+	return monitor.Injector.SendAskAnswer(pid, actions)
 }
 
 // ActShowWindow 将目标实例的终端窗口置前。
@@ -237,16 +248,20 @@ func (s *MonitorService) DisableBridge() error {
 
 // SettingsResult 返回给前端的设置数据。
 type SettingsResult struct {
-	CloseQuits       bool   `json:"closeQuits"`
-	AutoStart        bool   `json:"autoStart"`
-	Version          string `json:"version"`
-	LaunchWindowMode string `json:"launchWindowMode"` // show 显示窗口 / hide 最小化到任务栏
-	EnterToSend      bool   `json:"enterToSend"`      // 回车直接发送
-	LaunchYolo       bool   `json:"launchYolo"`       // 新建实例使用 bypassPermissions 模式
+	CloseQuits               bool   `json:"closeQuits"`
+	AutoStart                bool   `json:"autoStart"`
+	Version                  string `json:"version"`
+	LaunchWindowMode         string `json:"launchWindowMode"`         // show 显示窗口 / hide 最小化到任务栏
+	EnterToSend              bool   `json:"enterToSend"`              // 回车直接发送
+	LaunchYolo               bool   `json:"launchYolo"`               // 新建实例使用 bypassPermissions 模式
+	AutoCheckClaudeSettings  bool   `json:"autoCheckClaudeSettings"`  // 每 10 秒检查 ~/.claude/settings.json
+	AutoRepairClaudeSettings bool   `json:"autoRepairClaudeSettings"` // settings.json 漂移时自动修复
+	SortField                string `json:"sortField"`                // 实例列表排序字段（updatedAt | startedAt | contextTokens）
+	SortDir                  string `json:"sortDir"`                  // 排序方向（asc | desc）
 }
 
 // Version 应用版本号。
-const Version = "1.3.4"
+const Version = "1.3.8"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
@@ -256,30 +271,59 @@ func (s *MonitorService) GetSettings() *SettingsResult {
 	if mode == "" || mode == "minimize" {
 		mode = "hide" // 默认最小化到任务栏；兼容旧配置 minimize 值
 	}
-	return &SettingsResult{
-		CloseQuits:       cfg.CloseQuits,
-		AutoStart:        auto,
-		Version:          Version,
-		LaunchWindowMode: mode,
-		EnterToSend:      cfg.EnterToSend,
-		LaunchYolo:       cfg.LaunchYolo,
+	sortField := cfg.SortField
+	if sortField == "" {
+		sortField = "updatedAt" // 兼容旧配置（无该字段）
 	}
+	sortDir := cfg.SortDir
+	if sortDir == "" {
+		sortDir = "desc"
+	}
+	return &SettingsResult{
+		CloseQuits:               cfg.CloseQuits,
+		AutoStart:                auto,
+		Version:                  Version,
+		LaunchWindowMode:         mode,
+		EnterToSend:              cfg.EnterToSend,
+		LaunchYolo:               cfg.LaunchYolo,
+		AutoCheckClaudeSettings:  cfg.AutoCheckClaudeSettings,
+		AutoRepairClaudeSettings: cfg.AutoRepairClaudeSettings,
+		SortField:                sortField,
+		SortDir:                  sortDir,
+	}
+}
+
+// SaveListPrefs 持久化实例列表的排序偏好（字段 + 方向），下次启动沿用。
+// 与 SaveSettings 分离：列表视图状态独立保存，避免扰动其它设置项。
+func (s *MonitorService) SaveListPrefs(sortField, sortDir string) error {
+	cfg := monitor.GetSettings()
+	cfg.SortField = sortField
+	cfg.SortDir = sortDir
+	return monitor.SaveSettings(cfg)
 }
 
 // SaveSettings 保存设置并同步开机自启状态。launchMode 为启动终端窗口模式（show/minimize/hide）。
 // enterToSend 控制消息框发送键：true=回车发送（Shift+回车换行），false=回车换行（Shift+回车发送）。
 // launchYolo 控制新建实例是否使用 --permission-mode bypassPermissions。
-func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool, launchMode string, enterToSend bool, launchYolo bool) error {
+func (s *MonitorService) SaveSettings(closeQuits bool, autoStart bool, launchMode string, enterToSend bool, launchYolo bool, autoCheckClaudeSettings bool, autoRepairClaudeSettings bool) error {
 	cfg := monitor.GetSettings()
 	cfg.CloseQuits = closeQuits
 	cfg.AutoStart = autoStart
 	cfg.LaunchWindowMode = launchMode
 	cfg.EnterToSend = enterToSend
 	cfg.LaunchYolo = launchYolo
+	cfg.AutoCheckClaudeSettings = autoCheckClaudeSettings
+	cfg.AutoRepairClaudeSettings = autoRepairClaudeSettings
 	if err := monitor.SetAutoStart(autoStart); err != nil {
 		return err
 	}
 	return monitor.SaveSettings(cfg)
+}
+
+// GetBridgeRules 返回 settings.json 自动检查/自动修复说明弹窗所需的数据。
+func (s *MonitorService) GetBridgeRules() *monitor.BridgeRules {
+	rules := monitor.GetBridgeRules()
+	return &rules
 }
 
 // ShouldQuitOnClose 返回关闭按钮是否应直接退出。
@@ -297,13 +341,15 @@ func (s *MonitorService) OpenURL(url string) error {
 // 返回 (nil, nil) 表示已是最新；
 // 返回 (nil, error) 表示检查失败（网络/API 错误）。
 func (s *MonitorService) CheckUpdate() (*monitor.ReleaseInfo, error) {
-	info, err := monitor.CheckLatestRelease("pie-tk", "claude-code-monitor", monitor.GitHubToken())
+	info, err := monitor.CheckLatestRelease()
 	if err != nil {
 		return nil, err
 	}
 	if info == nil || !monitor.IsNewer(info.Version, Version) {
+		s.lastRelease = nil
 		return nil, nil
 	}
+	s.lastRelease = info
 	return info, nil
 }
 
@@ -322,7 +368,11 @@ func (s *MonitorService) DownloadUpdate(url string) error {
 				"percent":    pct,
 			})
 		}
-		if err := monitor.DownloadAndReplace(url, onProgress); err != nil {
+		signature := ""
+		if s.lastRelease != nil {
+			signature = s.lastRelease.Signature
+		}
+		if err := monitor.DownloadAndReplace(url, signature, onProgress); err != nil {
 			s.window.EmitEvent("update:progress", map[string]any{
 				"status":  "error",
 				"message": err.Error(),

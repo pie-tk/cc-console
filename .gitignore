@@ -27,3 +27,11 @@ frontend/node_modules/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# minisign 签名私钥（绝不提交；公钥已嵌入代码常量）
+claude-monitor.sec
+claude-monitor.local.sec
+
+# 更新发布产物
+*.minisig
+latest.json

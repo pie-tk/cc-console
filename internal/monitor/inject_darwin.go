@@ -22,6 +22,10 @@ func (s *stubInjector) SendPrompt(pid int, text string) error {
 	return fmt.Errorf("macOS 控制台注入尚未实现")
 }
 
+func (s *stubInjector) SendAskAnswer(pid int, actions string) error {
+	return fmt.Errorf("macOS 控制台注入尚未实现")
+}
+
 func (s *stubInjector) ShowWindow(pid int) error {
 	return fmt.Errorf("macOS 窗口置前尚未实现")
 }

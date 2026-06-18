@@ -12,6 +12,9 @@ const ID_ACT_PROMPT  = 3578199235;
 const ID_ACT_SHOW    = 3029513688;
 const ID_GET_SETTINGS  = 4111710580;
 const ID_SAVE_SETTINGS = 2821561663;
+const ID_GET_BRIDGE_STATUS = 3146505974;
+const ID_ENABLE_BRIDGE = 2832995149;
+const ID_GET_BRIDGE_RULES = 3926351507;
 const ID_OPEN_URL         = 2662437060;
 const ID_CHECK_UPDATE     = 2276698880;
 const ID_DOWNLOAD_UPDATE  = 1405235130;
@@ -20,6 +23,8 @@ const ID_GET_RECENT_DIRS   = 3059062206;
 const ID_LAUNCH_INSTANCE   = 3964521291;
 const ID_PICK_DIRECTORY    = 3885139809;
 const ID_GET_COMMANDS      = 4004856507; // GetCommandSuggestions(pid)
+const ID_SAVE_LIST_PREFS   = 1375619032; // SaveListPrefs(sortField, sortDir)
+const ID_ACT_ASK_ANSWER    = 1988866268; // ActAskAnswer(pid, actionsJSON) — AskUserQuestion 按键序列注入
 
 // ---- State ----
 let currentPids = [];
@@ -73,10 +78,29 @@ var SPINNER_VERBS = [
 let askToolUseId = '';
 let askQuestionIndex = 0;
 let askQuestionCount = 0;
+// AskUserQuestion 已选答案记忆：key = askToolUseId + '#' + askQuestionIndex。
+// value 结构：
+//   { kind:'single', optionIndex:number, label:string }
+//   { kind:'multi', picks:{optionIndex:true}, labels:string[] }
+//   { kind:'custom', text:string }
+// 用于切回题目时恢复高亮/勾选/自定义横幅，避免默认又亮第一个选项。
+let askAnswers = {};
+// 多选勾选态：key = askToolUseId + '#' + askQuestionIndex，value = {optionIndex: true}。
+// 用 tool_use id + 题号隔离；轮询重渲染时不进签名，勾选靠就地翻转 class 保留（见 toggleAskPick）。
+let askMultiSelectPicks = {};
+// Type something 自定义输入态：askCustomPending=true 时，下次发送走自定义答案而非普通 prompt。
+// askCustomQuestionIndex 记录是为哪一题输入（切题/关面板时重置）。
+let askCustomPending = false;
+let askCustomQuestionIndex = 0;
 let instanceMeta = {}; // pid → {topic, model}
 let newInstanceSelected = -1; // 新建实例面板当前选中项索引
 let newInstanceItems = [];    // 新建实例面板项：[{type:'dir',path}, {type:'pick'}]
 let sendOnEnter = true;       // 消息框发送键：true=回车发送(Shift+回车换行)；false=回车换行(Shift+回车发送)
+let autoCheckClaudeSettings = true;
+let autoRepairClaudeSettings = true;
+let chatDrafts = {};           // 消息框草稿：key = pid|cwd，关闭面板后保留，重新打开时恢复
+let bridgeStatusWarnKey = '';   // 避免 settings.json 漂移告警每 10s 重复弹
+let bridgeRepairInFlight = false;
 
 // ---- 斜杠命令自动补全状态 ----
 let slashList = [];       // 全量命令/技能建议缓存
@@ -84,6 +108,14 @@ let slashFiltered = [];   // 当前筛选结果
 let slashIdx = 0;         // 选中下标
 let slashOpen = false;    // 下拉是否展开
 let slashInput = null;    // 当前绑定的 textarea（chat-input 或 prompt-input）
+
+// ---- 目录筛选状态（纯前端，本次启动生效，不持久化）----
+// dirFilterHidden 记录被隐藏的 cwd（→ true）；未记录的目录默认显示。
+let dirFilterHidden = {};
+let dirFilterSig = '';   // 唯一目录签名，变化时才重建下拉 DOM（避免每秒刷新抖动）
+
+// ---- 聊天面板回溯提示 ----
+let chatHintTimer = null;
 
 // ---- Boot ----
 async function boot() {
@@ -93,9 +125,13 @@ async function boot() {
     console.error("Theme init error:", e);
   }
   loadSendMode(); // 加载消息框发送键设置，更新占位符/提示文案
+  loadListPrefs(); // 加载持久化的列表排序偏好（字段 + 方向）
   initSlashAutocomplete(); // 绑定消息框斜杠命令自动补全
+  initDirFilter(); // 绑定目录筛选下拉的外部点击关闭
   refresh();
+  pollBridgeStatus();
   setInterval(refresh, 1000);
+  setInterval(pollBridgeStatus, 10000);
 }
 
 // 加载发送键设置（回车发送 or Shift+回车发送），并刷新输入框提示文案。
@@ -123,6 +159,25 @@ function updateSendHints() {
       ? "输入文字后点击 发送 ⏎ 或按 Enter。多行会被折叠为空格。"
       : "输入文字后点击 发送 ⏎ 或按 Shift+Enter。多行会被折叠为空格。";
   }
+}
+
+// 加载持久化的列表排序偏好（字段 + 方向），覆盖内存默认值并同步排序栏高亮。
+async function loadListPrefs() {
+  try {
+    var s = await Call.ByID(ID_GET_SETTINGS);
+    if (s) {
+      if (s.sortField) sortField = s.sortField;
+      if (s.sortDir) sortDir = s.sortDir;
+      updateSortBar();
+    }
+  } catch (e) { /* 读取失败保持默认 */ }
+}
+
+// 持久化当前排序偏好（字段 + 方向）。失败静默，不阻断 UI。
+async function saveListPrefs() {
+  try {
+    await Call.ByID(ID_SAVE_LIST_PREFS, sortField, sortDir);
+  } catch (e) { /* 忽略 */ }
 }
 
 boot();
@@ -163,6 +218,48 @@ async function refresh() {
     const msg = e && e.message ? e.message : String(e);
     document.getElementById("foot-msg").textContent = "检测出错: " + msg;
     document.getElementById("foot-msg").className = "foot-msg fresh";
+  }
+}
+
+async function pollBridgeStatus() {
+  try {
+    if (!autoCheckClaudeSettings) return;
+    const info = await Call.ByID(ID_GET_BRIDGE_STATUS);
+    if (!info) return;
+    var drift = [];
+    if (!info.hooked) drift.push('statusLine');
+    if (info.enabled && !info.hooksInstalled) drift.push('lifecycle hooks');
+    var key = drift.join('|');
+    if (!key) {
+      bridgeStatusWarnKey = '';
+      return;
+    }
+    if (!info.enabled) return;
+    if (!autoRepairClaudeSettings) {
+      if (bridgeStatusWarnKey !== key) {
+        flashFoot('⚠ 检测到 ~/.claude/settings.json 已偏离监控器要求：缺少 ' + drift.join(' + ') + '；当前仅检测，不自动修复');
+      }
+      bridgeStatusWarnKey = key;
+      return;
+    }
+    if (bridgeRepairInFlight) return;
+    bridgeRepairInFlight = true;
+    try {
+      await Call.ByID(ID_ENABLE_BRIDGE);
+      if (bridgeStatusWarnKey !== key) {
+        flashFoot('🔧 已自动修复 ~/.claude/settings.json：恢复 ' + drift.join(' + '));
+      }
+      bridgeStatusWarnKey = key;
+    } catch (e) {
+      if (bridgeStatusWarnKey !== key) {
+        flashFoot('⚠ 自动修复 ~/.claude/settings.json 失败：' + (e && e.message ? e.message : e));
+      }
+      bridgeStatusWarnKey = key;
+    } finally {
+      bridgeRepairInFlight = false;
+    }
+  } catch (e) {
+    // 静默：轮询告警不应打断主刷新
   }
 }
 
@@ -208,6 +305,7 @@ function renderCards(live, stale) {
 
   // 构建实例元数据：topic/model/status 供聊天面板标题与交互判定，
   // 另带 context/tokens 字段供聊天面板底部信息条显示（与卡片同形式）。
+  // 用未筛选的 all 构建，确保被筛选隐藏的实例在面板已打开时仍可刷新。
   const newMeta = {};
   for (var i = 0; i < all.length; i++) {
     var inst = all[i];
@@ -215,6 +313,7 @@ function renderCards(live, stale) {
       topic: inst.topic || '',
       model: inst.model || '',
       branch: inst.gitBranch || '',
+      cwd: inst.cwd || '',
       status: inst.status || 'unknown',
       hasConversation: !!inst.hasConversation,
       contextTokens: inst.contextTokens || 0,
@@ -230,23 +329,41 @@ function renderCards(live, stale) {
   }
   instanceMeta = newMeta;
 
+  // 刷新目录筛选下拉（含按钮显隐、文案、勾选态）
+  renderDirFilter(all);
+
   if (all.length === 0) {
     container.innerHTML = "";
     emptyState.classList.remove("hidden");
     currentPids = [];
     return;
   }
+
+  // 应用目录筛选：dirFilterHidden 中记录的 cwd 被隐藏
+  const shown = applyDirFilter(all);
+
+  // 全部被筛选隐藏 → 显示专门空态
+  if (shown.length === 0) {
+    container.innerHTML = '<div class="filter-empty">'
+      + '<div class="empty-icon">🔍</div>'
+      + '<div class="empty-title">所有目录都已被筛选隐藏</div>'
+      + '<div class="empty-hint">点击右上角「📂 目录」恢复勾选</div>'
+      + '</div>';
+    emptyState.classList.add("hidden");
+    currentPids = [];
+    return;
+  }
   emptyState.classList.add("hidden");
 
-  const newPids = all.map(i => i.pid).join(",");
+  const newPids = shown.map(i => i.pid).join(",");
   const oldPids = currentPids.join(",");
 
   if (newPids !== oldPids) {
-    container.innerHTML = all.map(cardHTML).join("");
-    currentPids = all.map(i => i.pid);
+    container.innerHTML = shown.map(cardHTML).join("");
+    currentPids = shown.map(i => i.pid);
     container.querySelectorAll(".card-history").forEach(function(h) { h.scrollTop = h.scrollHeight; });
   } else {
-    all.forEach((inst, i) => {
+    shown.forEach((inst, i) => {
       updateCardText(container.children[i], inst);
     });
   }
@@ -284,6 +401,7 @@ window.handleSort = function(field) {
     sortDir = 'desc';
   }
   updateSortBar();
+  saveListPrefs(); // 持久化排序偏好，下次启动沿用
   currentPids = [];
   refresh();
 };
@@ -298,6 +416,152 @@ function updateSortBar() {
     arrow.textContent = isActive ? (sortDir === 'desc' ? '↓' : '↑') : '↓';
     btn.dataset.dir = isActive ? sortDir : 'desc';
   }
+}
+
+// ---- 目录筛选下拉 ----
+
+// collectUniqueDirs 返回去重后的 cwd 列表（按首次出现顺序）。
+function collectUniqueDirs(all) {
+  var seen = {};
+  var dirs = [];
+  for (var i = 0; i < all.length; i++) {
+    var cwd = all[i].cwd || '';
+    if (!cwd || seen[cwd]) continue;
+    seen[cwd] = true;
+    dirs.push(cwd);
+  }
+  return dirs;
+}
+
+// renderDirFilter 刷新筛选按钮显隐/文案与下拉列表。
+// 列表 DOM 仅在唯一目录集合变化（签名不同）时重建，避免每秒刷新抖动并保留勾选交互。
+function renderDirFilter(all) {
+  var dirs = collectUniqueDirs(all);
+  var btn = document.getElementById('dir-filter-btn');
+  var wrap = document.getElementById('dir-filter-wrap');
+  if (!btn || !wrap) return;
+  // 仅 ≤1 个唯一目录时隐藏筛选（无意义）
+  wrap.style.display = dirs.length > 1 ? '' : 'none';
+  if (dirs.length <= 1) return;
+
+  // 按钮文案：有隐藏项时显示「· 隐 N」
+  var hiddenInList = 0;
+  for (var i = 0; i < dirs.length; i++) {
+    if (dirFilterHidden[dirs[i]]) hiddenInList++;
+  }
+  btn.textContent = hiddenInList > 0 ? '📂 目录 · 隐 ' + hiddenInList : '📂 目录';
+
+  // 签名比对决定是否重建列表 DOM
+  var sig = dirs.join('\n');
+  if (sig === dirFilterSig) {
+    // 集合未变，仍需同步「全选」勾选态（隐藏项可能因实例消失而变化）
+    syncSelectAll(dirs);
+    return;
+  }
+  dirFilterSig = sig;
+
+  // 重建复选框列表
+  var listEl = document.getElementById('dir-filter-list');
+  if (!listEl) return;
+  var html = '';
+  for (var j = 0; j < dirs.length; j++) {
+    var cwd = dirs[j];
+    var checked = !dirFilterHidden[cwd];
+    // value 用下标索引，cwd 经 data-cwd 传递；目录中含特殊字符故用属性而非内联参数
+    html += '<label class="dir-filter-item" title="' + escAttr(cwd) + '">'
+      + '<input type="checkbox" data-cwd="' + escAttr(cwd) + '"' + (checked ? ' checked' : '')
+      + ' onchange="onDirFilterItemChange(this)">'
+      + '<span class="dir-filter-item-label">' + escHtml(cwdTitle(cwd)) + '</span>'
+      + '</label>';
+  }
+  listEl.innerHTML = html;
+  syncSelectAll(dirs);
+}
+
+// syncSelectAll 按当前目录集合同步「全选」复选框的勾选态。
+function syncSelectAll(dirs) {
+  var allCb = document.getElementById('dir-filter-selectall');
+  if (!allCb) return;
+  var allShown = true;
+  for (var i = 0; i < dirs.length; i++) {
+    if (dirFilterHidden[dirs[i]]) { allShown = false; break; }
+  }
+  allCb.checked = allShown;
+}
+
+// applyDirFilter 过滤掉被隐藏目录的实例。
+function applyDirFilter(all) {
+  var hasHidden = false;
+  for (var k in dirFilterHidden) { if (dirFilterHidden[k]) { hasHidden = true; break; } }
+  if (!hasHidden) return all;
+  return all.filter(function(i) { return !dirFilterHidden[i.cwd || '']; });
+}
+
+window.toggleDirFilter = function(e) {
+  if (e) e.stopPropagation();
+  var dd = document.getElementById('dir-filter-dropdown');
+  if (dd) dd.classList.toggle('hidden');
+};
+
+// initDirFilter 绑定「点击下拉外部关闭」。列表内部点击不冒泡，避免误关。
+function initDirFilter() {
+  document.addEventListener('click', function(e) {
+    var dd = document.getElementById('dir-filter-dropdown');
+    if (!dd || dd.classList.contains('hidden')) return;
+    var wrap = document.getElementById('dir-filter-wrap');
+    if (wrap && !wrap.contains(e.target)) {
+      dd.classList.add('hidden');
+    }
+  });
+}
+
+// onDirFilterItemChange 单个目录勾选/取消勾选 → 更新隐藏集合并刷新卡片。
+window.onDirFilterItemChange = function(cb) {
+  var cwd = cb.getAttribute('data-cwd') || '';
+  if (cb.checked) delete dirFilterHidden[cwd];
+  else dirFilterHidden[cwd] = true;
+  // 仅刷新按钮文案与「全选」态，无需重建列表（避免勾选闪烁）
+  syncSelectAllFromDOM();
+  refreshFilterBtnText();
+  currentPids = [];
+  refresh();
+};
+
+// onDirFilterAllChange 全选/全不选：对当前下拉中所有目录统一显隐。
+window.onDirFilterAllChange = function() {
+  var allCb = document.getElementById('dir-filter-selectall');
+  if (!allCb) return;
+  var cbs = document.querySelectorAll('#dir-filter-list input[type=checkbox]');
+  for (var i = 0; i < cbs.length; i++) {
+    cbs[i].checked = allCb.checked;
+    var cwd = cbs[i].getAttribute('data-cwd') || '';
+    if (allCb.checked) delete dirFilterHidden[cwd];
+    else dirFilterHidden[cwd] = true;
+  }
+  refreshFilterBtnText();
+  currentPids = [];
+  refresh();
+};
+
+// syncSelectAllFromDOM 从当前 DOM 复选框反推「全选」态。
+function syncSelectAllFromDOM() {
+  var cbs = document.querySelectorAll('#dir-filter-list input[type=checkbox]');
+  var allShown = true;
+  for (var i = 0; i < cbs.length; i++) {
+    if (!cbs[i].checked) { allShown = false; break; }
+  }
+  var allCb = document.getElementById('dir-filter-selectall');
+  if (allCb) allCb.checked = allShown;
+}
+
+// refreshFilterBtnText 按当前 DOM 复选框统计隐藏数并更新按钮文案。
+function refreshFilterBtnText() {
+  var btn = document.getElementById('dir-filter-btn');
+  if (!btn) return;
+  var cbs = document.querySelectorAll('#dir-filter-list input[type=checkbox]');
+  var hidden = 0;
+  for (var i = 0; i < cbs.length; i++) if (!cbs[i].checked) hidden++;
+  btn.textContent = hidden > 0 ? '📂 目录 · 隐 ' + hidden : '📂 目录';
 }
 
 function cwdTitle(cwd) {
@@ -325,7 +589,7 @@ function cardHTML(inst) {
     + '<div class="card-inner">'
     + '<div class="card-row">'
     + '<span class="card-emoji">' + emoji + '</span>'
-    + '<span class="card-title" data-field="title" title="' + escAttr(cwd) + '">' + escHtml(title) + '</span>'
+    + '<span class="card-title" data-field="title" title="' + escAttr(topic) + '">' + escHtml(topic) + '</span>'
     + '<span class="card-branch" data-field="branch">' + escHtml(branchDisplay(inst)) + '</span>'
     + '<span class="card-status ' + statusClass + '" data-field="status">' + label + '</span>'
     + '<span class="card-bridge-tag' + (inst.bridgeConnected ? '' : ' show') + '" data-field="bridge" title="statusline 桥接尚未生效，实时数据待接入（新会话刷新后自动接入）">⏳ 未接入</span>'
@@ -334,7 +598,7 @@ function cardHTML(inst) {
     + '<span class="card-duration" data-field="duration">' + humanDuration(inst.startedAt) + '</span>'
     + '</div>'
     + '<div class="card-row card-topic-row">'
-    + '<span class="card-topic" data-field="topic">💬 ' + topic + '</span>'
+    + '<span class="card-topic" data-field="topic" title="' + escAttr(cwd) + '">📁 ' + escHtml(title) + '</span>'
     + '</div>'
     + historyHTML(inst)
     + '<div class="card-row card-context">'
@@ -357,12 +621,12 @@ function cardHTML(inst) {
 function updateCardText(el, inst) {
   if (!el) return;
   const set = (sel, val) => { const e = el.querySelector(sel); if (e) e.textContent = val; };
-  set("[data-field=title]", cwdTitle(inst.cwd || ""));
+  set("[data-field=title]", topicDisplay(inst));
   set("[data-field=branch]", branchDisplay(inst));
   set("[data-field=status]", statusLabel(inst.status));
   set("[data-field=model]", modelDisplay(inst));
   set("[data-field=duration]", humanDuration(inst.startedAt));
-  set("[data-field=topic]", "💬 " + topicDisplay(inst));
+  set("[data-field=topic]", "📁 " + cwdTitle(inst.cwd || ""));
   set("[data-field=ctxBar]", contextBar(inst));
   set("[data-field=ctxPct]", contextPct(inst));
   set("[data-field=ctxDetail]", contextDetail(inst));
@@ -413,7 +677,9 @@ function updateCardText(el, inst) {
   }
 
   var titleEl = el.querySelector("[data-field=title]");
-  if (titleEl) titleEl.title = inst.cwd || "";
+  if (titleEl) titleEl.title = inst.topic || "";
+  var topicEl = el.querySelector("[data-field=topic]");
+  if (topicEl) topicEl.title = inst.cwd || "";
   var statusEl = el.querySelector(".card-status");
   if (statusEl) statusEl.className = "card-status " + (inst.status || "unknown");
   var barEl = el.querySelector(".context-bar");
@@ -823,18 +1089,24 @@ function formatRichContent(text) {
       i = end + 1;
       continue;
     }
-    var lt = text.indexOf('<', i);
-    if (lt < 0) { html += renderMarkdown(text.slice(i)); break; }
-    var m = tagRe.exec(text.slice(lt));
-    if (!m || !CC_BLOCK_TAGS[m[1]]) {
-      // 非已知标签（含代码里的 <）：当普通文本，仅吃掉这个 '<' 继续扫描
-      html += renderMarkdown(text.slice(i, lt + 1));
-      i = lt + 1;
-      continue;
+    // 从 i 起向后扫描第一个「已知注解标签」的 <；途中的非已知 <（代码/正文里的 < 等）
+    // 一律视为普通文本，不在此切分——它们连同前后文本整体交给 renderMarkdown，< 由
+    // escHtml 转义为 &lt;。切分会破坏表格等跨多行 markdown 结构（行被截断后不再以 |
+    // 结尾，数据行匹配失败，导致只渲染表头）。
+    // 关键：只推进临时扫描指针 scan，不移动 i——原先遇到非已知 < 直接 i=lt+1 会把 <
+    // 及其之前的整段文本永久丢弃（消息含 `<pid>` 这类时首段直接消失），这是回归根因。
+    var tagAt = -1, mOpen = null, scan = i;
+    while (true) {
+      var lt = text.indexOf('<', scan);
+      if (lt < 0) break;
+      var mm = tagRe.exec(text.slice(lt));
+      if (mm && CC_BLOCK_TAGS[mm[1]]) { tagAt = lt; mOpen = mm; break; }
+      scan = lt + 1; // 非已知标签：跳过继续找，不丢文本
     }
-    html += renderMarkdown(text.slice(i, lt)); // 前导文本
-    var name = m[1];
-    var afterOpen = lt + m[0].length;
+    if (tagAt < 0) { html += renderMarkdown(text.slice(i)); break; } // 无更多已知标签
+    html += renderMarkdown(text.slice(i, tagAt)); // 标签前文本（含途中所有非已知 <）
+    var name = mOpen[1];
+    var afterOpen = tagAt + mOpen[0].length;
     var close = '</' + name + '>';
     var ci = text.indexOf(close, afterOpen);
     var content, eend;
@@ -1148,9 +1420,17 @@ window.openChatPanel = async function(pid) {
     branchEl.textContent = br ? ("🌿 " + br) : "";
     branchEl.style.display = br ? "" : "none";
   }
+  var cwdEl = document.getElementById("chat-cwd");
+  if (cwdEl) {
+    var cwd = (meta && meta.cwd) ? meta.cwd : "";
+    cwdEl.textContent = cwdTitle(cwd);
+    cwdEl.title = cwd;
+    cwdEl.style.display = cwd ? "" : "none";
+  }
 
   document.getElementById("chat-messages").innerHTML = '<div class="chat-empty">加载中...</div>';
-  document.getElementById("chat-input").value = "";
+  var draftKey = pid + '|' + (meta && meta.cwd ? meta.cwd : '');
+  document.getElementById("chat-input").value = chatDrafts[draftKey] || "";
   document.getElementById("chat-overlay").classList.remove("hidden");
   document.getElementById("chat-input").focus();
 
@@ -1320,6 +1600,22 @@ function renderChatStats(pid) {
     modelEl.textContent = mdl;
     modelEl.style.display = mdl ? "" : "none";
   }
+
+  // 主题：与 instanceMeta 对比，不一致时更新（新会话获得主题、/clear 后主题变更）
+  var titleEl = document.getElementById("chat-title");
+  if (titleEl) {
+    var topic = (inst && inst.topic) ? inst.topic : ('PID ' + pid);
+    if (titleEl.textContent !== topic) titleEl.textContent = topic;
+  }
+
+  // 目录：每秒刷新
+  var cwdEl = document.getElementById("chat-cwd");
+  if (cwdEl) {
+    var cwd = inst.cwd || "";
+    cwdEl.textContent = cwdTitle(cwd);
+    cwdEl.title = cwd;
+    cwdEl.style.display = cwd ? "" : "none";
+  }
 }
 
 window.closeChatPanel = function() {
@@ -1327,15 +1623,52 @@ window.closeChatPanel = function() {
   document.getElementById("chat-waiting").classList.add("hidden");
   document.getElementById("chat-quick-replies").classList.add("hidden");
   document.getElementById("chat-processing").classList.add("hidden");
+  hideChatHint();
   hideSlash();
   chatPanelPid = null;
   chatHistoryHash = 0;
   lastChatMessages = [];
   lastReplySignature = '';
   procReset();
+  askCustomPending = false; // 关面板清掉自定义输入态
   // 不重置 ask 多问追踪(保留中途进度,重开面板可续上)
   if (chatRefreshTimer) { clearInterval(chatRefreshTimer); chatRefreshTimer = null; }
 };
+
+// ---- 聊天面板回溯 ----
+// 回溯选择器是 Claude Code 在终端渲染的 TUI，JSONL 里没有它的列表，
+// 无法在面板精准复刻/安全驱动。这里发 Esc×2 打开选择器并把该实例终端置前，
+// 面板内提示用户到终端选择回溯点。
+window.handleChatRewind = async function() {
+  if (!chatPanelPid) return;
+  showChatHint('⏪ 已打开回溯选择器，请在终端选择回溯点…');
+  try {
+    await Call.ByID(ID_ACT_REWIND, chatPanelPid); // 发送 ESC×2
+    await Call.ByID(ID_ACT_SHOW, chatPanelPid);   // 把该实例终端置前，立刻看到选择器
+  } catch (e) {
+    showChatHint('回溯失败: ' + (e && e.message ? e.message : String(e)));
+  }
+};
+
+// showChatHint 显示聊天面板左下角的提示文案，4s 后自动隐藏（叠加调用重置计时）。
+function showChatHint(msg) {
+  var el = document.getElementById('chat-hint');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  if (chatHintTimer) clearTimeout(chatHintTimer);
+  chatHintTimer = setTimeout(function() {
+    el.classList.add('hidden');
+    chatHintTimer = null;
+  }, 4000);
+}
+
+// hideChatHint 立即隐藏提示并清计时器（关闭面板时调用）。
+function hideChatHint() {
+  if (chatHintTimer) { clearTimeout(chatHintTimer); chatHintTimer = null; }
+  var el = document.getElementById('chat-hint');
+  if (el) el.classList.add('hidden');
+}
 
 async function refreshChatMessages(pid) {
   if (pid === null) return;
@@ -1432,6 +1765,11 @@ window.sendChatMessage = async function() {
   var text = input.value.trim();
   if (!text) return;
 
+  // Type something 自定义输入态:走按键序列提交(不走普通 prompt)
+  if (askCustomPending) {
+    return submitAskCustom(text);
+  }
+
   var btn = document.getElementById("chat-send-btn");
   btn.disabled = true;
   btn.textContent = "发送中...";
@@ -1440,6 +1778,7 @@ window.sendChatMessage = async function() {
     await Call.ByID(ID_ACT_PROMPT, chatPanelPid, text);
     input.value = "";
     input.style.height = ""; // 重置 textarea 高度
+    delete chatDrafts[chatDraftKey()]; // 发送成功，清除草稿
     // 乐观显示已发送的消息
     var container = document.getElementById("chat-messages");
     var optHTML = '<div class="chat-msg chat-msg-user">'
@@ -1466,6 +1805,8 @@ window.sendChatMessage = async function() {
 function injectInteractivePrompts(messages) {
   var waitingEl = document.getElementById("chat-waiting");
   var repliesEl = document.getElementById("chat-quick-replies");
+  // Type something 自定义输入态:保持 banner,不重写选项区(用户正在下方输入框输入)
+  if (askCustomPending) return;
   if (!messages || messages.length === 0) {
     waitingEl.classList.add("hidden");
     repliesEl.classList.add("hidden");
@@ -1487,12 +1828,17 @@ function injectInteractivePrompts(messages) {
       askToolUseId = info.askToolUseId;
       askQuestionIndex = 0;
       askQuestionCount = (info.askQuestions || []).length;
+      askAnswers = {}; // 新一轮提问,清空旧答案记忆
+      askMultiSelectPicks = {}; // 新一轮提问,清空旧多选勾选(防泄漏)
     }
     var qs = info.askQuestions || [];
     if (askQuestionIndex < qs.length) {
       var cur = qs[askQuestionIndex];
+      // hint 附加多选标记,提示用户可勾选多项
+      var multiTag = cur.multiSelect ? '（可多选）' : '';
       info.hint = '❓ ' + (cur.question || cur.header || '请选择：')
-        + (qs.length > 1 ? '  （' + (askQuestionIndex + 1) + '/' + qs.length + '）' : '');
+        + (qs.length > 1 ? '  （' + (askQuestionIndex + 1) + '/' + qs.length + '）' : '')
+        + (multiTag ? '  ' + multiTag : '');
       info.buttons = buildAskButtons(cur);
     } else {
       // 所有问题已答完(Claude Code 进入 Submit 步骤),不在消息框显示按钮;
@@ -1504,6 +1850,8 @@ function injectInteractivePrompts(messages) {
     askToolUseId = '';
     askQuestionIndex = 0;
     askQuestionCount = 0;
+    askAnswers = {};
+    askMultiSelectPicks = {};
   }
 
   // 交互暂停点判定:
@@ -1531,26 +1879,85 @@ function injectInteractivePrompts(messages) {
     assistantEls[assistantEls.length - 1].classList.add("chat-msg-interactive");
   }
 
-  // 生成快速回复按钮(签名去重:每秒轮询重评估时,内容不变就不重写 innerHTML)
+  // 生成快速回复按钮(签名去重:每秒轮询重评估时,结构不变就不重写 innerHTML)
+  // 签名只描述结构(题号 + 多选标志 + 选项列表),不含勾选态——勾选靠就地翻转 class,
+  // 避免每秒轮询重写 innerHTML 冲掉用户的多选勾选(见 toggleAskPick)。
+  var askMulti = info.kind === 'ask' && info.buttons.length > 0 && info.buttons[0].multi;
   var sig = info.kind;
-  if (info.kind === 'ask') sig += '#' + askQuestionIndex; // 含题号,切换题目必触发重渲染
-  sig += '|' + info.buttons.map(function(b) { return b.value; }).join(',');
+  if (info.kind === 'ask') sig += '#' + askQuestionIndex + '|m=' + (askMulti ? 1 : 0);
+  sig += '|' + info.buttons.map(function(b) { return (b.optionIndex != null ? b.optionIndex : b.value); }).join(',');
   if (sig !== lastReplySignature) {
-    var btnsHTML = '';
-    // AskUserQuestion 多问时加 ‹ › 导航:活跃会话 jsonl 滞后,无法自动得知终端
-    // 当前问到第几题(用户可能在终端答过),让用户手动对齐消息框与终端的当前题。
-    if (info.kind === 'ask' && askQuestionCount > 1) {
-      btnsHTML += '<button class="quick-reply-btn nav" onclick="navAskQuestion(-1)"'
-        + (askQuestionIndex <= 0 ? ' disabled' : '') + '>‹</button>';
+    // 选项是否带说明文字(AskUserQuestion 的 option.description),或多选(需纵向勾选卡片)。
+    var hasDesc = false;
+    for (var j = 0; j < info.buttons.length; j++) {
+      if (info.buttons[j].desc) { hasDesc = true; break; }
     }
+    var fullwidth = hasDesc || askMulti; // 纵向满宽布局
+    var multiQ = info.kind === 'ask' && askQuestionCount > 1; // 多问(显示 ‹ › 导航)
+    // AskUserQuestion 多问时加 ‹ › 导航,且同步终端焦点(见 navAskQuestion)。
+    var navPrev = '<button class="quick-reply-btn nav" onclick="navAskQuestion(-1)"'
+      + (askQuestionIndex <= 0 ? ' disabled' : '') + '>‹</button>';
+    var navNext = '<button class="quick-reply-btn nav" onclick="navAskQuestion(1)"'
+      + (askQuestionIndex >= askQuestionCount ? ' disabled' : '') + '>›</button>';
+
+    // 选项按钮分流:ask 多选(勾选) / ask 单选(按键序列) / plan·perm(发文本)
+    var optsHTML = '';
+    var currentAnswer = currentAskAnswer();
+    if (fullwidth) optsHTML += '<div class="ask-option-group">';
     for (var j = 0; j < info.buttons.length; j++) {
       var b = info.buttons[j];
       var cls = b.cls || '';
-      btnsHTML += '<button class="quick-reply-btn ' + cls + '" onclick="sendQuickReply(\'' + escAttr(String(b.value)) + '\')">' + escHtml(b.label) + '</button>';
+      if (info.kind === 'ask' && b.multi) {
+        // 多选:优先用 askMultiSelectPicks（当前编辑态），无则回退到已记忆答案 askAnswers。
+        var picked = isAskPicked(b.optionIndex) || !!(currentAnswer && currentAnswer.kind === 'multi' && currentAnswer.picks && currentAnswer.picks[b.optionIndex]);
+        optsHTML += '<button class="quick-reply-btn with-desc ask-multi' + (picked ? ' selected' : '') + '"'
+          + ' data-opt-idx="' + b.optionIndex + '" onclick="toggleAskPick(' + b.optionIndex + ')">'
+          + '<span class="ask-multi-box">' + (picked ? '☑' : '☐') + '</span>'
+          + '<span class="ask-option-label">' + escHtml(b.label) + '</span>'
+          + (b.desc ? '<span class="ask-option-desc">' + escHtml(b.desc) + '</span>' : '')
+          + '</button>';
+      } else if (info.kind === 'ask') {
+        // 单选:按真实已选答案高亮；不再默认高亮第一项。
+        var selected = isAskSingleSelected(b.optionIndex);
+        var scls = selected ? ' primary selected' : '';
+        if (b.desc) {
+          optsHTML += '<button class="quick-reply-btn with-desc' + scls + '" onclick="sendQuickReply(' + b.optionIndex + ', \'ask\')">'
+            + '<span class="ask-option-label">' + escHtml(b.label) + '</span>'
+            + '<span class="ask-option-desc">' + escHtml(b.desc) + '</span>'
+            + '</button>';
+        } else {
+          optsHTML += '<button class="quick-reply-btn' + scls + '" onclick="sendQuickReply(' + b.optionIndex + ', \'ask\')">' + escHtml(b.label) + '</button>';
+        }
+      } else {
+        // plan / perm:维持发文本(ActPrompt),value='1'/'2'/'3'/'y'/'n'
+        if (b.desc) {
+          optsHTML += '<button class="quick-reply-btn with-desc ' + cls + '" onclick="sendQuickReply(\'' + escAttr(String(b.value)) + '\', \'' + info.kind + '\')">'
+            + '<span class="ask-option-label">' + escHtml(b.label) + '</span>'
+            + '<span class="ask-option-desc">' + escHtml(b.desc) + '</span>'
+            + '</button>';
+        } else {
+          optsHTML += '<button class="quick-reply-btn ' + cls + '" onclick="sendQuickReply(\'' + escAttr(String(b.value)) + '\', \'' + info.kind + '\')">' + escHtml(b.label) + '</button>';
+        }
+      }
     }
-    if (info.kind === 'ask' && askQuestionCount > 1) {
-      btnsHTML += '<button class="quick-reply-btn nav" onclick="navAskQuestion(1)"'
-        + (askQuestionIndex >= askQuestionCount ? ' disabled' : '') + '>›</button>';
+    // ask 追加「✍ 自定义输入」(终端 Type something 入口) + 多选「✓ 确认提交」
+    if (info.kind === 'ask') {
+      var customSelected = currentAnswer && currentAnswer.kind === 'custom';
+      var customLabel = customSelected ? ('✍ 已选自定义：' + (currentAnswer.text || '')) : '✍ 自定义输入';
+      optsHTML += '<button class="quick-reply-btn ask-custom' + (customSelected ? ' selected' : '') + '" onclick="startAskCustom()">' + escHtml(customLabel) + '</button>';
+    }
+    if (askMulti) {
+      optsHTML += '<button class="quick-reply-btn ask-submit" onclick="submitMultiSelect()">✓ 确认提交</button>';
+    }
+    if (fullwidth) optsHTML += '</div>';
+
+    var btnsHTML;
+    if (fullwidth && multiQ) {
+      // 满宽场景:导航放头部,避免 › 单独落在末行。
+      btnsHTML = navPrev + navNext + optsHTML;
+    } else {
+      // 横向 pill:维持夹层式 ‹ 选项 › 布局。
+      btnsHTML = (multiQ ? navPrev : '') + optsHTML + (multiQ ? navNext : '');
     }
     repliesEl.innerHTML = '<span class="chat-msg-label" style="margin-right:6px">' + escHtml(info.hint) + '</span>' + btnsHTML;
     lastReplySignature = sig;
@@ -1558,28 +1965,125 @@ function injectInteractivePrompts(messages) {
   repliesEl.classList.remove("hidden");
 }
 
+// ---- 多选勾选状态(就地翻转,不触发轮询重渲染) ----
+function askPicksKey() { return askToolUseId + '#' + askQuestionIndex; }
+function isAskPicked(optionIndex) {
+  var p = askMultiSelectPicks[askPicksKey()];
+  return !!(p && p[optionIndex]);
+}
+// toggleAskPick 切换某选项的勾选态:更新 askMultiSelectPicks + 就地翻转按钮 DOM 的 class/复选框,
+// 不动 lastReplySignature(签名不含勾选态),避免每秒轮询冲掉勾选。
+window.toggleAskPick = function(optionIndex) {
+  var k = askPicksKey();
+  if (!askMultiSelectPicks[k]) askMultiSelectPicks[k] = {};
+  if (askMultiSelectPicks[k][optionIndex]) delete askMultiSelectPicks[k][optionIndex];
+  else askMultiSelectPicks[k][optionIndex] = true;
+  var btn = document.querySelector('#chat-quick-replies button[data-opt-idx="' + optionIndex + '"]');
+  if (btn) {
+    var on = btn.classList.toggle('selected');
+    var box = btn.querySelector('.ask-multi-box');
+    if (box) box.textContent = on ? '☑' : '☐';
+  }
+};
+
 // buildAskButtons 由一个 AskUserQuestion 问题(question)构造快速回复按钮。
-// value 用选项序号(1-based)——Claude Code 终端 UI 靠数字键选择选项，
-// 发送标签文本无法可靠匹配（含 emoji 等特殊字符时尤其容易误选第一项）。
+// 每个按钮带 optionIndex(options 数组 0-based 原始下标),供 buildAskSequence 计算方向键次数;
+// multi 标志透传给渲染层决定单选(点击即发)还是多选(点击勾选 + 单独提交)。
 function buildAskButtons(question) {
   var opts = (question && question.options) || [];
+  var multi = !!(question && question.multiSelect);
   var btns = [];
-  var num = 0;
   for (var oi = 0; oi < opts.length; oi++) {
     var opt = opts[oi];
-    var label = opt.label || opt;
-    // 「Type something.」是自由输入项,不是可点选的预设,跳过(交给终端输入)
-    if (typeof opt === 'string' ? opt === 'Type something.' : (opt.label === 'Type something.')) {
-      continue;
-    }
-    num++;
+    var label = (typeof opt === 'object') ? (opt.label || '') : String(opt);
+    // 「Type something.」是终端 UI 自动追加的自由输入项(样本确认不在 input 里,此处防御性跳过)。
+    // 消息框用专门的「✍ 自定义输入」按钮承接(见 injectInteractivePrompts 渲染层)。
+    if (label === 'Type something.') continue;
+    var desc = (typeof opt === 'object' && opt.description) ? opt.description : '';
     btns.push({
       label: label,
-      value: String(num),
-      cls: oi === 0 ? 'primary' : ''
+      desc: desc,
+      optionIndex: oi,  // options 数组原始下标(buildAskSequence 据此决定 ↓ 次数)
+      multi: multi,     // 是否多选(渲染层据此决定点击行为)
+      cls: ''           // 不再默认高亮第一项；高亮由 askAnswers/askMultiSelectPicks 的真实选择决定
     });
   }
   return btns;
+}
+
+function askAnswerKey() { return askToolUseId + '#' + askQuestionIndex; }
+function currentAskAnswer() { return askAnswers[askAnswerKey()] || null; }
+function setAskSingleAnswer(optionIndex, label) {
+  askAnswers[askAnswerKey()] = { kind: 'single', optionIndex: optionIndex, label: label || '' };
+}
+function setAskMultiAnswer(picks, labels) {
+  askAnswers[askAnswerKey()] = { kind: 'multi', picks: picks || {}, labels: labels || [] };
+}
+function setAskCustomAnswer(text) {
+  askAnswers[askAnswerKey()] = { kind: 'custom', text: text || '' };
+}
+function isAskSingleSelected(optionIndex) {
+  var a = currentAskAnswer();
+  return !!(a && a.kind === 'single' && a.optionIndex === optionIndex);
+}
+
+// currentAskQuestion 取当前 AskUserQuestion 的当前题对象(由 askQuestionIndex 决定)。
+// 重新调 detectInteraction(lastChatMessages) 取最新 questions,无额外缓存状态。
+function currentAskQuestion() {
+  var info = detectInteraction(lastChatMessages);
+  if (!info || info.kind !== 'ask') return null;
+  var qs = info.askQuestions || [];
+  return qs[askQuestionIndex] || qs[0] || null;
+}
+
+// getOptionLabel 取 question.options[idx] 的 label 文本。
+function getOptionLabel(question, optionIndex) {
+  if (!question || !question.options) return '';
+  var opt = question.options[optionIndex];
+  if (opt == null) return '';
+  return (typeof opt === 'object') ? (opt.label || '') : String(opt);
+}
+
+// buildAskSequence 把「对当前题的选择」翻译成终端按键 token 序列。
+// 返回 [{key:'down'},...] 或 [{text:'abc'},...] 的数组,JSON.stringify 后交给 ActAskAnswer。
+// 终端交互(Claude Code Select 上下文,依据官方 keybindings 文档 + Issue #22300):
+//   - 数字键 '1'-'9':直接选择/切换第 N 项(单选已实测可用)。
+//   - j/k:select:next/previous 的官方别名,可打印字符,替代注入不了的方向键 ↓/↑。
+//   - Enter(\r):确认/提交。
+// 终端交互(依据最新实测):
+//   - 单选:数字键 '1'-'9' 直接作答当前题。非最后一题后面不能盲补回车,否则会落到下一题默认项。
+//   - 多选:数字键 toggle 各项;真正的键盘 ↑/↓ 事件有效,可用 ↓ 导航。
+//   - 多选 UI 结构 = 选项列表 + Type something + Submit,需多按一次 ↓ 越过 Type something 到 Submit。
+//   - Type something:用 ↓ 导航到该项,再 Enter 进入输入。
+// 多问切题需同步终端 ←/→ 焦点,否则消息框与终端会错位(见 navAskQuestion)。
+function buildAskSequence(p) {
+  var seq = [];
+  // totalOptionsCount = question.options.length + 1(+1 为终端末尾自动追加的 Type something 项)
+  var totalOpts = p.totalOptionsCount || 0;
+  if (p.customText) {
+    // Type something:从第 1 项 ↓ 到末尾 Type something(index=选项数) + Enter 进入输入 + 文本 + Enter 提交
+    // 注意:Other 文本含数字会被 claude 误判为选项选择(其已知 bug),仅字母/符号可靠。
+    for (var i = 0; i < totalOpts - 1; i++) seq.push({ key: 'down' });
+    seq.push({ key: 'enter' });
+    seq.push({ text: p.customText });
+    seq.push({ key: 'enter' });
+    return seq;
+  }
+  if (p.multiSelect) {
+    // 多选:数字键 toggle 各选中项,然后用真正的 ↓ 键导航到 Submit 项 + 回车提交。
+    // UI = 选项列表 + Type something + Submit;从第 1 项到 Submit 需 ↓×totalOpts 次
+    // (越过选项数-1 次到 Type something,再多 1 次到 Submit)。
+    var picks = (p.selectedIndices || []).slice();
+    for (var s = 0; s < picks.length; s++) seq.push({ text: String(picks[s] + 1) });
+    for (var t = 0; t < totalOpts; t++) seq.push({ key: 'down' });
+    seq.push({ key: 'enter' });
+    return seq;
+  }
+  // 单选:只发数字键(optionIndex+1)直接作答当前题。
+  // 非最后一题若再补回车,会误命中下一题默认高亮项;最终确认由调用方在最后一题单独处理。
+  var idx = (p.selectedIndices && p.selectedIndices[0] != null) ? p.selectedIndices[0] : 0;
+  seq.push({ text: String(idx + 1) });
+  return seq;
 }
 
 // NO_CONFIRM_TOOLS：Claude Code 默认自动批准、无需用户权限确认的工具。
@@ -1685,51 +2189,245 @@ function detectInteraction(messages) {
   };
 }
 
-// navAskQuestion 手动切换 AskUserQuestion 多问的当前题(不发送任何内容,仅本地推进/回退)。
-// 用于消息框与终端当前题对齐——活跃会话 jsonl 滞后,无法自动得知终端问到第几题。
+// navAskQuestion 切换 AskUserQuestion 多问的当前题,并同步终端 ←/→ 焦点。
+// 实测若只在前端切题、不同步终端,会出现:消息框看的是第 2 题,终端仍停第 1 题,
+// 结果点击第 2 题选项时,第 1 题和第 2 题同时被误答。故这里恢复同步方向键。
 window.navAskQuestion = function(delta) {
   if (!askToolUseId) return;
   var next = askQuestionIndex + delta;
   if (next < 0) next = 0;
   if (next > askQuestionCount) next = askQuestionCount;
   if (next === askQuestionIndex) return;
+  // 自定义输入态下切题:先取消,避免 banner 指向错误题号
+  if (askCustomPending) cancelAskCustom();
   askQuestionIndex = next;
   lastReplySignature = ''; // 强制重新注入(换题后按钮变了)
+  if (chatPanelPid && next < askQuestionCount) {
+    var key = delta > 0 ? 'right' : 'left';
+    Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: key }])).catch(function(e) {
+      showChatHint('切题同步失败: ' + (e && e.message ? e.message : e));
+    });
+  }
   injectInteractivePrompts(lastChatMessages);
 };
 
-// sendQuickReply 发送快速回复（y/n 或选项文本）。
-window.sendQuickReply = async function(text) {
+// sendQuickReply 发送快速回复。
+// kind='ask'  → value 是 optionIndex,走按键序列(ActAskAnswer + buildAskSequence)驱动终端选择。
+// kind='plan'/'perm' → value 是 '1'/'2'/'3'/'y'/'n',发文本(ActPrompt)。
+window.sendQuickReply = async function(value, kind) {
   if (!chatPanelPid) return;
   try {
-    await Call.ByID(ID_ACT_PROMPT, chatPanelPid, text);
-    // 若答的是 AskUserQuestion 的某题,推进本地多问进度到下一题
-    // (jsonl 不记录答题进度,只能本地追踪;injectInteractivePrompts 据此显示下一题)。
+    var optimisticText = String(value);
+    if (kind === 'ask') {
+      // 单选:value = optionIndex。当前题只发数字键作答;若这是最后一题,再补最终确认页的 1 + Enter。
+      var cur = currentAskQuestion();
+      var isLastQuestion = askToolUseId && askQuestionIndex === askQuestionCount - 1;
+      var seq = buildAskSequence({
+        questionIndex: askQuestionIndex,
+        totalCount: askQuestionCount,
+        totalOptionsCount: (cur ? cur.options.length : 0) + 1,
+        multiSelect: false,
+        selectedIndices: [value],
+        customText: ''
+      });
+      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify(seq));
+      if (isLastQuestion) {
+        await new Promise(function(resolve) { setTimeout(resolve, 200); });
+        await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ text: '1' }]));
+        await new Promise(function(resolve) { setTimeout(resolve, 80); });
+        await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
+      }
+      optimisticText = cur ? getOptionLabel(cur, value) : String(value);
+      setAskSingleAnswer(value, optimisticText);
+    } else {
+      // plan / perm:发文本
+      await Call.ByID(ID_ACT_PROMPT, chatPanelPid, String(value));
+    }
+    // 推进本地多问进度(AskUserQuestion 答完一题到下一题)
     if (askToolUseId && askQuestionIndex < askQuestionCount) {
       askQuestionIndex++;
     }
-    // 乐观显示
-    var container = document.getElementById("chat-messages");
-    var optHTML = '<div class="chat-msg chat-msg-user">'
-      + '<span class="chat-msg-label">📝 快速回复</span>'
-      + escHtml(text)
-      + '</div>';
-    container.insertAdjacentHTML("beforeend", optHTML);
-    var body = container.parentNode;
-    body.scrollTop = body.scrollHeight;
-    // 隐藏交互 UI(下一题会在随后刷新时按新 index 重新注入)
-    document.getElementById("chat-waiting").classList.add("hidden");
-    document.getElementById("chat-quick-replies").classList.add("hidden");
-    lastReplySignature = '';
-    // 立即显示「处理中」动效（乐观），status 变 busy 后接管
-    showProcessingOptimistic();
-    // 快速刷新
+    showOptimisticReply(optimisticText);
+    finishAskInteraction();
     refreshChatMessages(chatPanelPid);
     setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
   } catch (e) {
     alert("发送失败: " + (e && e.message ? e.message : e));
   }
 };
+
+// submitMultiSelect 提交当前多选题的所有勾选:构造多选按键序列注入终端。
+window.submitMultiSelect = async function() {
+  if (!chatPanelPid) return;
+  var picks = askMultiSelectPicks[askPicksKey()] || {};
+  var indices = Object.keys(picks).map(Number).sort(function(a, b) { return a - b; });
+  if (indices.length === 0) { showChatHint('请至少勾选一项'); return; }
+  var cur = currentAskQuestion();
+  try {
+    // 三阶段发送(关键):
+    //  1) 先发数字键 toggle 勾选
+    //  2) 等待 claude UI 消化勾选
+    //  3) 像手动点调试键栏一样,每次只发一个 ↓,步进到 Submit 项后再单独回车
+    // 原因:实测单发 ↓ 有效,但把多个 ↓ 批量/高速发送时 claude 多选 UI 不跟随。
+    var toggleSeq = indices.map(function(i) { return { text: String(i + 1) }; });
+    var totalOpts = (cur ? cur.options.length : 0) + 1; // +1 为 Type something
+    var isLastQuestion = askToolUseId && askQuestionIndex === askQuestionCount - 1;
+
+    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify(toggleSeq));
+    await new Promise(function(resolve) { setTimeout(resolve, 200); });
+
+    for (var t = 0; t < totalOpts; t++) {
+      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'down' }]));
+      await new Promise(function(resolve) { setTimeout(resolve, 100); });
+    }
+    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
+
+    // 最后一题会进入 AskUserQuestion 的最终确认页:
+    //   1. Submit answers
+    //   2. Cancel
+    // 这里不能盲目对所有多选多发回车,否则在非最后一题会误伤下一题默认项。
+    // 仅当当前题是最后一题时,等待确认页渲染后自动发 "1" + 回车完成最终提交。
+    if (isLastQuestion) {
+      await new Promise(function(resolve) { setTimeout(resolve, 200); });
+      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ text: '1' }]));
+      await new Promise(function(resolve) { setTimeout(resolve, 80); });
+      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
+    }
+
+    var labels = indices.map(function(i) { return getOptionLabel(cur, i); });
+    setAskMultiAnswer(Object.assign({}, picks), labels);
+    delete askMultiSelectPicks[askPicksKey()]; // 清该题勾选
+    if (askToolUseId && askQuestionIndex < askQuestionCount) askQuestionIndex++;
+    showOptimisticReply(labels.join('、'));
+    finishAskInteraction();
+    refreshChatMessages(chatPanelPid);
+    setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
+  } catch (e) {
+    alert("发送失败: " + (e && e.message ? e.message : e));
+  }
+};
+
+// ---- Type something 自定义输入流程 ----
+// 点击「✍ 自定义输入」后,选项区换成提示 banner,聚焦下方输入框;
+// 用户输入文本发送时(sendChatMessage 拦截)走 submitAskCustom 构造 Type something 序列。
+window.startAskCustom = function() {
+  if (!chatPanelPid) return;
+  askCustomPending = true;
+  askCustomQuestionIndex = askQuestionIndex;
+  var repliesEl = document.getElementById("chat-quick-replies");
+  repliesEl.innerHTML = '<div class="ask-custom-banner">'
+    + '<span>✍ 正在为第 ' + (askQuestionIndex + 1) + ' 题输入自定义答案(下方输入框输入,发送即提交)</span>'
+    + '<button class="ask-custom-cancel" onclick="cancelAskCustom()">✗ 取消</button>'
+    + '</div>';
+  repliesEl.classList.remove("hidden");
+  document.getElementById("chat-waiting").classList.add("hidden");
+  var input = document.getElementById("chat-input");
+  input.value = "";
+  input.placeholder = "输入自定义答案,发送即提交...";
+  input.focus();
+};
+
+window.cancelAskCustom = function() {
+  askCustomPending = false;
+  var input = document.getElementById("chat-input");
+  input.value = "";
+  updateSendHints(); // 恢复 placeholder
+  lastReplySignature = ''; // 触发重新渲染选项区
+  injectInteractivePrompts(lastChatMessages);
+};
+
+// submitAskCustom 用 Type something 序列提交自定义文本。
+// 文本换行扁平化为空格(终端输入框换行不可预测,与 ActPrompt 一致)。
+async function submitAskCustom(text) {
+  if (!chatPanelPid) return;
+  var flat = text.replace(/\r\n/g, ' ').replace(/\n/g, ' ');
+  var cur = currentAskQuestion();
+  try {
+    var seq = buildAskSequence({
+      questionIndex: askCustomQuestionIndex,
+      totalCount: askQuestionCount,
+      totalOptionsCount: (cur ? cur.options.length : 0) + 1,
+      multiSelect: false,
+      selectedIndices: [],
+      customText: flat
+    });
+    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify(seq));
+    askCustomPending = false;
+    var input = document.getElementById("chat-input");
+    input.value = "";
+    input.style.height = "";
+    delete chatDrafts[chatDraftKey()];
+    updateSendHints(); // 恢复 placeholder
+    setAskCustomAnswer(flat);
+    // 推进多问进度(对齐进入自定义模式时的题号)
+    if (askToolUseId && askCustomQuestionIndex < askQuestionCount) {
+      askQuestionIndex = askCustomQuestionIndex + 1;
+    }
+    showOptimisticReply('✍ ' + flat);
+    finishAskInteraction();
+    refreshChatMessages(chatPanelPid);
+    setTimeout(function() { if (chatPanelPid) refreshChatMessages(chatPanelPid); }, 2000);
+  } catch (e) {
+    alert("发送失败: " + (e && e.message ? e.message : e));
+    askCustomPending = false;
+    updateSendHints();
+    lastReplySignature = '';
+    injectInteractivePrompts(lastChatMessages);
+  }
+}
+window.submitAskCustom = submitAskCustom;
+
+// ---- 交互作答的公共收尾 ----
+// showOptimisticReply 在消息区追加一条「快速回复」气泡并滚到底。
+function showOptimisticReply(text) {
+  var container = document.getElementById("chat-messages");
+  container.insertAdjacentHTML("beforeend", '<div class="chat-msg chat-msg-user">'
+    + '<span class="chat-msg-label">📝 快速回复</span>'
+    + escHtml(text) + '</div>');
+  var body = container.parentNode;
+  body.scrollTop = body.scrollHeight;
+}
+
+// finishAskInteraction 隐藏交互 UI、重置签名、显示处理中动效(下一题随后刷新时重新注入)。
+function finishAskInteraction() {
+  document.getElementById("chat-waiting").classList.add("hidden");
+  document.getElementById("chat-quick-replies").classList.add("hidden");
+  lastReplySignature = '';
+  showProcessingOptimistic();
+}
+
+// ---- 调试键:逐个注入单键到终端,摸清 claude 选择 UI 的真实响应(临时,验证后删除) ----
+// sendText 注入一个文本字符(如 j/k/数字);sendKey 注入一个控制键(方向键/回车/空格/Tab)。
+window.sendText = async function(ch) {
+  if (!chatPanelPid) return;
+  try {
+    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ text: ch }]));
+    showChatHint('已发送文本: ' + ch);
+  } catch (e) { showChatHint('发送失败: ' + (e && e.message ? e.message : e)); }
+};
+window.sendKey = async function(key) {
+  if (!chatPanelPid) return;
+  try {
+    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: key }]));
+    showChatHint('已发送键: ' + key);
+  } catch (e) { showChatHint('发送失败: ' + (e && e.message ? e.message : e)); }
+};
+
+// ---- 消息框草稿：按 pid+cwd 存储，关闭面板后保留，发送后清除 ----
+function chatDraftKey() {
+  if (!chatPanelPid) return null;
+  var meta = instanceMeta[chatPanelPid];
+  var cwd = (meta && meta.cwd) ? meta.cwd : '';
+  return chatPanelPid + '|' + cwd;
+}
+
+function saveChatDraft() {
+  var key = chatDraftKey();
+  if (!key) return;
+  var val = document.getElementById("chat-input").value;
+  if (val) { chatDrafts[key] = val; }
+  else { delete chatDrafts[key]; }
+}
 
 // ---- 斜杠命令/技能自动补全 ----
 // 复刻 Claude Code 终端体验：消息框输入 / 后弹出可用命令/技能列表，
@@ -1741,6 +2439,7 @@ function initSlashAutocomplete() {
   var chatInput = document.getElementById("chat-input");
   if (chatInput) {
     chatInput.addEventListener("input", onSlashInput);
+    chatInput.addEventListener("input", saveChatDraft);
     chatInput.addEventListener("blur", function() { setTimeout(hideSlash, 120); });
   }
   var promptInput = document.getElementById("prompt-input");
@@ -2050,6 +2749,51 @@ function shouldSendOnEnter(e) {
   return sendOnEnter ? !e.shiftKey : e.shiftKey;
 }
 
+function updateClaudeSettingsToggleState() {
+  var autoCheck = document.getElementById("toggle-auto-check-claude-settings");
+  var autoRepair = document.getElementById("toggle-auto-repair-claude-settings");
+  var row = document.getElementById("settings-item-auto-repair-claude-settings");
+  if (!autoCheck || !autoRepair || !row) return;
+  var enabled = !!autoCheck.checked;
+  autoRepair.disabled = !enabled;
+  row.classList.toggle("disabled", !enabled);
+}
+
+function buildRulesHTML(rules) {
+  if (!rules) return '<div class="chat-empty">加载失败</div>';
+  var statusPath = escapeHtml(rules.claudeSettingsPath || '~/.claude/settings.json');
+  var backupPath = escapeHtml(rules.backupPath || '~/.claude-monitor/orig-statusline.json');
+  var statusJson = escapeHtml(rules.statusLineJson || '');
+  var hooksJson = escapeHtml(rules.hooksJson || '');
+  return ''
+    + '<div class="rules-section">'
+    + '  <div class="rules-heading">两个开关的作用</div>'
+    + '  <div class="rules-text">自动检查：每 10 秒检查 ' + statusPath + ' 是否仍保留监控器要求的 statusLine 与 lifecycle hooks。\n自动修复：发现配置漂移时，自动恢复监控器需要的 statusLine 与 lifecycle hooks；关闭后只检测不写回。</div>'
+    + '</div>'
+    + '<div class="rules-section">'
+    + '  <div class="rules-heading">本应用修改规则</div>'
+    + '  <div class="rules-text">只修改 ' + statusPath + '。\n只涉及 statusLine 与 4 个 lifecycle hooks（UserPromptSubmit / PreToolUse / PostToolUse / Stop）。\n不会修改 env、model、插件配置等其他字段。\n原 statusLine 会备份到 ' + backupPath + '。</div>'
+    + '</div>'
+    + '<div class="rules-section">'
+    + '  <div class="rules-heading">statusLine 配置片段（可复制）</div>'
+    + '  <textarea class="modal-textarea rules-code" readonly>' + statusJson + '</textarea>'
+    + '</div>'
+    + '<div class="rules-section">'
+    + '  <div class="rules-heading">hooks 配置片段（可复制）</div>'
+    + '  <textarea class="modal-textarea rules-code" readonly>' + hooksJson + '</textarea>'
+    + '</div>'
+    + '<div class="rules-section">'
+    + '  <div class="rules-heading">手动维护说明</div>'
+    + '  <div class="rules-text">如果关闭自动修复，可将以上片段合并到 ' + statusPath + ' 中手动维护。\n如需恢复原状，可在监控器中禁用桥接，或移除监控器注入的 statusLine 与 hooks 条目。</div>'
+    + '</div>';
+}
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 // ---- Settings ----
 window.showSettings = async function() {
   try {
@@ -2063,6 +2807,13 @@ window.showSettings = async function() {
     if (sendToggle) sendToggle.checked = !!s.enterToSend;
     var yoloToggle = document.getElementById("toggle-launch-yolo");
     if (yoloToggle) yoloToggle.checked = !!s.launchYolo;
+    var autoCheckToggle = document.getElementById("toggle-auto-check-claude-settings");
+    if (autoCheckToggle) autoCheckToggle.checked = s.autoCheckClaudeSettings !== false;
+    var autoRepairToggle = document.getElementById("toggle-auto-repair-claude-settings");
+    if (autoRepairToggle) autoRepairToggle.checked = s.autoRepairClaudeSettings !== false;
+    autoCheckClaudeSettings = s.autoCheckClaudeSettings !== false;
+    autoRepairClaudeSettings = s.autoRepairClaudeSettings !== false;
+    updateClaudeSettingsToggleState();
   } catch (e) {
     flashFoot("加载设置失败: " + (e && e.message ? e.message : e));
   }
@@ -2090,9 +2841,13 @@ window.saveSetting = async function(key, val) {
   var launchMode = document.getElementById("select-launch-mode").value;
   var enterToSend = document.getElementById("toggle-enter-to-send").checked;
   var launchYolo = document.getElementById("toggle-launch-yolo").checked;
+  var autoCheck = document.getElementById("toggle-auto-check-claude-settings").checked;
+  var autoRepair = document.getElementById("toggle-auto-repair-claude-settings").checked;
   try {
-    await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart, launchMode, enterToSend, launchYolo);
-    // 发送键设置需即时生效：更新内存状态并刷新输入框提示文案
+    await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart, launchMode, enterToSend, launchYolo, autoCheck, autoRepair);
+    autoCheckClaudeSettings = !!autoCheck;
+    autoRepairClaudeSettings = !!autoRepair;
+    updateClaudeSettingsToggleState();
     if (key === "enterToSend") {
       sendOnEnter = !!enterToSend;
       updateSendHints();
@@ -2102,7 +2857,9 @@ window.saveSetting = async function(key, val) {
       autoStart: "开机启动",
       launchMode: "终端窗口设置",
       enterToSend: "发送键设置",
-      launchYolo: "新建实例权限设置"
+      launchYolo: "新建实例权限设置",
+      autoCheckClaudeSettings: "自动检查 Claude settings.json",
+      autoRepairClaudeSettings: "自动修复 Claude settings.json"
     };
     flashFoot("✓  " + (labels[key] || "设置") + "已保存");
   } catch (e) {
@@ -2110,8 +2867,27 @@ window.saveSetting = async function(key, val) {
     else if (key === "autoStart") document.getElementById("toggle-auto-start").checked = !val;
     else if (key === "enterToSend") document.getElementById("toggle-enter-to-send").checked = !val;
     else if (key === "launchYolo") document.getElementById("toggle-launch-yolo").checked = !val;
+    else if (key === "autoCheckClaudeSettings") document.getElementById("toggle-auto-check-claude-settings").checked = !val;
+    else if (key === "autoRepairClaudeSettings") document.getElementById("toggle-auto-repair-claude-settings").checked = !val;
+    updateClaudeSettingsToggleState();
     flashFoot("保存失败: " + (e && e.message ? e.message : e));
   }
+};
+
+window.showClaudeSettingsRules = async function() {
+  var content = document.getElementById('claude-settings-rules-content');
+  content.innerHTML = '<div class="chat-empty">加载中...</div>';
+  document.getElementById('claude-settings-rules-overlay').classList.remove('hidden');
+  try {
+    var rules = await Call.ByID(ID_GET_BRIDGE_RULES);
+    content.innerHTML = buildRulesHTML(rules);
+  } catch (e) {
+    content.innerHTML = '<div class="chat-empty">加载失败：' + escapeHtml(e && e.message ? e.message : e) + '</div>';
+  }
+};
+
+window.hideClaudeSettingsRules = function() {
+  document.getElementById('claude-settings-rules-overlay').classList.add('hidden');
 };
 
 window.openSettingsGithub = async function() {
@@ -2195,6 +2971,7 @@ window.downloadUpdate = async function() {
   bar.classList.remove("hidden");
   fill.style.width = "0%";
 
+  Events.Off("update:progress");
   Events.On("update:progress", function(evt) {
     var d = evt.data;
     if (d.status === "downloading") {
@@ -2214,7 +2991,7 @@ window.downloadUpdate = async function() {
   try {
     await Call.ByID(ID_DOWNLOAD_UPDATE, pendingDownloadURL);
   } catch (e) {
-    Off("update:progress");
+    Events.Off("update:progress");
     flashFoot("更新失败: " + (e && e.message ? e.message : e));
     btn.textContent = "⬇ 下载并安装更新";
     btn.disabled = false;

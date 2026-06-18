@@ -3,6 +3,7 @@
 package monitor
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"syscall"
@@ -53,6 +54,12 @@ const eventTypeKey = 0x0001 // INPUT_RECORD::EventType == KEY_EVENT
 const (
 	vkReturn  = 0x0D
 	vkEscape  = 0x1B
+	vkLeft    = 0x25
+	vkUp      = 0x26
+	vkRight   = 0x27
+	vkDown    = 0x28
+	vkSpace   = 0x20
+	vkTab     = 0x09
 	swRestore = 9 // SW_RESTORE
 )
 
@@ -74,12 +81,39 @@ type inputRecord struct {
 	event     [16]byte // 联合体：写入时按 keyEventRecord 重叠解释
 }
 
+// vkToScanCode 返回虚拟键对应的标准键盘扫描码(Set 1)。
+// 字符键靠 uChar 被控制台识别,但方向键/空格/Tab 等控制键 uChar=0,
+// 控制台必须靠 wVirtualScanCode 才能识别——漏设会让 WriteConsoleInput 注入的
+// 方向键被目标进程忽略(实测:Claude Code 终端选单点中间项无效,只回车选了第一项)。
+func vkToScanCode(vk uint16) uint16 {
+	switch vk {
+	case vkEscape:
+		return 0x01
+	case vkTab:
+		return 0x0F
+	case vkReturn:
+		return 0x1C
+	case vkSpace:
+		return 0x39
+	case vkLeft:
+		return 0x4B
+	case vkUp:
+		return 0x48
+	case vkRight:
+		return 0x4D
+	case vkDown:
+		return 0x50
+	}
+	return 0
+}
+
 func makeKeyRecord(down bool, vk uint16, ch uint16) inputRecord {
 	kev := keyEventRecord{
-		bKeyDown:        boolToInt32(down),
-		wRepeatCount:    1,
-		wVirtualKeyCode: vk,
-		uChar:           ch,
+		bKeyDown:         boolToInt32(down),
+		wRepeatCount:     1,
+		wVirtualKeyCode:  vk,
+		wVirtualScanCode: vkToScanCode(vk),
+		uChar:            ch,
 	}
 	var ir inputRecord
 	ir.eventType = eventTypeKey
@@ -203,7 +237,123 @@ func (w *windowsInjector) SendPrompt(pid int, text string) error {
 		return err
 	}
 	time.Sleep(50 * time.Millisecond)
-	return sendInputRecords(uint32(pid), withEnter(nil))
+	if err := sendInputRecords(uint32(pid), withEnter(nil)); err != nil {
+		return err
+	}
+	// /model <name> 跨档位切换会弹 TUI 确认列表（默认高亮「Yes, switch」）。
+	// 该提示直接画在终端屏幕上、不写进转录 JSONL，消息框看不到，用户无从确认。
+	// 后台隔 1s 补一个回车、共 3 次：命中提示时确认切换；未弹提示（直接切换）时
+	// 空回车落在主输入框被 Claude Code 忽略，无害。多次重试是为应对提示渲染时机不确定。
+	// 后台 goroutine 不阻塞前端调用返回。
+	if isModelSwitch(text) {
+		go autoConfirmModelSwitch(uint32(pid))
+	}
+	return nil
+}
+
+// autoConfirmModelSwitch 后台间隔发送回车，确认 /model 切换提示。
+// 忽略每次发送的错误（实例已退出等情况无需处理）。
+func autoConfirmModelSwitch(pid uint32) {
+	const retries = 3
+	const interval = 1 * time.Second
+	for range retries {
+		time.Sleep(interval)
+		_ = sendInputRecords(pid, withEnter(nil))
+	}
+}
+
+// isModelSwitch 判断输入是否为带参数的 /model 切换命令。
+// 必须带参数，避免裸 /model 弹出模型选择器时被自动回车误选某项。
+func isModelSwitch(text string) bool {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "/model") {
+		return false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(t, "/model")) != ""
+}
+
+// arrowRecord 产生单个虚拟键的「按下+抬起」KEY_EVENT 记录(方向键,uChar=0,靠 vk+scan code)。
+func arrowRecord(vk uint16) []inputRecord {
+	return []inputRecord{
+		makeKeyRecord(true, vk, 0),
+		makeKeyRecord(false, vk, 0),
+	}
+}
+
+// keyTokenRecords 把单个控制键 token 翻译为输入记录。
+// 方向键走 KEY_EVENT(虚拟键码 + 扫描码);空格/Tab 走字符注入;回车走 VK_RETURN。
+// 调试按钮可逐个发送,用于摸清 claude 终端对各键的真实响应。
+func keyTokenRecords(key string) ([]inputRecord, error) {
+	switch key {
+	case "left":
+		return arrowRecord(vkLeft), nil
+	case "right":
+		return arrowRecord(vkRight), nil
+	case "up":
+		return arrowRecord(vkUp), nil
+	case "down":
+		return arrowRecord(vkDown), nil
+	case "space":
+		return textRecords(" "), nil
+	case "tab":
+		return textRecords("\t"), nil
+	case "enter":
+		return withEnter(nil), nil
+	default:
+		return nil, fmt.Errorf("未知按键 token: %q", key)
+	}
+}
+
+// actionToken 对应前端 buildAskSequence 输出的一个按键 token。
+// Key 非空时为控制键（方向键/空格/Tab/回车）；Text 非空时为待注入文本。
+type actionToken struct {
+	Key  string `json:"key,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+// SendAskAnswer 按 token 序列向目标实例投递按键事件，用于驱动 AskUserQuestion 的终端选择 UI。
+// 遇到 {text} 段时采用两段式投递：先发前置控制键、sleep、再发文本、sleep、再发后续控制键，
+// 避免控制台输入缓冲区（约 256 条）在中文宽字符消费较慢时挤掉末尾回车（同 SendPrompt 经验）。
+func (w *windowsInjector) SendAskAnswer(pid int, actions string) error {
+	var tokens []actionToken
+	if err := json.Unmarshal([]byte(actions), &tokens); err != nil {
+		return fmt.Errorf("actions JSON 解析失败: %w", err)
+	}
+	upid := uint32(pid)
+	// flush 投递一批记录并留出消费窗口。
+	flush := func(recs []inputRecord) error {
+		if len(recs) == 0 {
+			return nil
+		}
+		if err := sendInputRecords(upid, recs); err != nil {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+
+	var pending []inputRecord // 累积控制键，遇到 text 前先投递
+	for _, tk := range tokens {
+		if tk.Text != "" {
+			if err := flush(pending); err != nil {
+				return err
+			}
+			pending = nil
+			if err := flush(textRecords(tk.Text)); err != nil {
+				return err
+			}
+			continue
+		}
+		recs, err := keyTokenRecords(tk.Key)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, recs...)
+	}
+	if len(pending) > 0 {
+		return sendInputRecords(upid, pending)
+	}
+	return nil
 }
 
 func (w *windowsInjector) ShowWindow(pid int) error {

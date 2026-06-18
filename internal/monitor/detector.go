@@ -25,10 +25,10 @@ type claudeProc struct {
 
 // 平台特定实现，由 detector_windows.go / detector_darwin.go 在 init 中注册。
 var (
-	isProcessAlive     func(pid int, startedAt int64) bool  // 单 pid 存活验证（保留供其他场景）
-	enumerateClaude    func() []claudeProc                  // 枚举所有 claude.exe 进程
-	procCwd            func(pid int) string                 // 读进程工作目录
-	enumerateChildren  func(claudePids []int) map[int][]int // 各 claude.exe 的直接子进程 pid（供 busy 判定，非 Win 为 nil）
+	isProcessAlive    func(pid int, startedAt int64) bool  // 单 pid 存活验证（保留供其他场景）
+	enumerateClaude   func() []claudeProc                  // 枚举所有 claude.exe 进程
+	procCwd           func(pid int) string                 // 读进程工作目录
+	enumerateChildren func(claudePids []int) map[int][]int // 各 claude.exe 的直接子进程 pid（供 busy 判定，非 Win 为 nil）
 )
 
 // cacheMu 保护下面所有包级缓存 map（lastInstanceByPid / lastBusyAt / convCache /
@@ -58,9 +58,26 @@ type sessionMeta struct {
 	mtimeMs   int64 // 文件 mtime（epoch 毫秒）
 }
 
-// busyGraceMs：失去 busy 信号(statusline 停止刷新且无工具子进程)后仍保持 busy 的宽限期。
-// 滞回窗口,消除 statusline 零星刷新导致的 busy/idle 抖动。
+// liveRead 缓存一次 ReadLive 的结果，供 Detect 两遍扫描复用，避免对同一 live 文件重复读+解析。
+type liveRead struct {
+	rec   LiveRecord
+	mtime int64
+	fresh bool
+	ok    bool
+}
+
+type hookRead struct {
+	state HookState
+	mtime int64
+	ok    bool
+}
+
+// busyGraceMs：无 lifecycle hook 时，失去 busy 信号(statusline 停止刷新且无工具子进程)后仍保持 busy 的宽限期。
+// hook 驱动会话不再依赖这段长滞回，只给 legacy fallback 用。
 const busyGraceMs int64 = 6000
+
+// hookFreshMs：hook 状态文件在该窗口内视为当前有效；超时则回退到旧 heuristic。
+const hookFreshMs int64 = 120000
 
 // Detect 返回当前存活的 Claude Code 实例。
 //
@@ -88,6 +105,28 @@ func Detect() (live []Instance, stale []Instance, err error) {
 	usedSession := make(map[string]bool)
 	alivePids := make(map[int]bool, len(procs))
 
+	// Pass 1：预读所有实例的 live 文件，收集「已被 live 实例精确占用的 sessionId」。
+	// 走 live 路径的实例用官方 transcriptPath 读自己的会话，不调 matchSession、原先不标记 used——
+	// 导致同 cwd 的无 live 实例（新建实例启动窗口期 / 未接入桥接）在 fallback 的 matchSession 里
+	// 抢到 mtime 最新的 jsonl，显示别人的对话记录。这里把 live 占用的 sessionId 收集起来，
+	// 供 Pass 2 的 fallback 从候选池排除。
+	liveOwned := make(map[string]bool)
+	liveReads := make(map[int]liveRead, len(procs))
+	hookReads := make(map[int]hookRead, len(procs))
+	for _, p := range procs {
+		rec, mtime, fresh, hasLive := ReadLive(p.pid, now)
+		liveReads[p.pid] = liveRead{rec: rec, mtime: mtime, fresh: fresh, ok: hasLive}
+		if hasLive && rec.TranscriptPath != "" {
+			sid := strings.TrimSuffix(filepath.Base(rec.TranscriptPath), ".jsonl")
+			if sid != "" {
+				liveOwned[sid] = true
+			}
+		}
+		if hs, hm, ok := ReadHookState(p.pid); ok {
+			hookReads[p.pid] = hookRead{state: hs, mtime: hm, ok: true}
+		}
+	}
+
 	for _, p := range procs {
 		alivePids[p.pid] = true
 
@@ -97,7 +136,8 @@ func Detect() (live []Instance, stale []Instance, err error) {
 			continue
 		}
 
-		rec, mtime, fresh, hasLive := ReadLive(p.pid, now)
+		lr := liveReads[p.pid]
+		rec, mtime, fresh, hasLive := lr.rec, lr.mtime, lr.fresh, lr.ok
 
 		var inst Instance
 		switch {
@@ -109,14 +149,13 @@ func Detect() (live []Instance, stale []Instance, err error) {
 			// 会把同 cwd 的多个旧会话都错配到最新会话,导致不同实例显示同一会话。
 			inst = buildInstanceFromStaleLive(p, rec, mtime, now)
 		default:
-			inst = buildInstanceFallback(p, sessionsByCwd, usedSession, now)
+			inst = buildInstanceFallback(p, sessionsByCwd, usedSession, liveOwned, now)
 		}
 
-		// 融合判定 busy/idle:statusline 流式信号 + 进程树工具子进程 + 滞回。
-		// Claude Code 在执行子进程类工具期间不调用 statusline(live 文件停止刷新),
-		// 单靠 mtime 会把"正在跑工具"误判为 idle——靠子进程信号补救,滞回消除抖动。
+		// 生命周期 hook 状态优先，statusline/子进程信号退化为兜底。
 		streaming := hasLive && now-mtime < liveBusyMs
-		inst.Status = fusedStatus(p.pid, streaming, hasToolChild(p.pid, children), hasLive || inst.HasConversation, now)
+		hr := hookReads[p.pid]
+		inst.Status = fusedStatus(p.pid, hr.state, hr.ok, hr.mtime, streaming, hasToolChild(p.pid, children), hasLive || inst.HasConversation, now)
 
 		// 缓存 SessionInfo 供 GetChatHistory(pid) 复用(含 transcriptPath,读历史用)
 		si := &SessionInfo{
@@ -147,8 +186,9 @@ func Detect() (live []Instance, stale []Instance, err error) {
 		return live[i].Pid < live[j].Pid
 	})
 
-	// 清理已退出进程残留的 live 文件
+	// 清理已退出进程残留的 live / hook 文件
 	CleanLiveFiles(alivePids)
+	CleanHookFiles(alivePids)
 	// 清理已退出进程的 busy 滞回残留
 	cacheMu.Lock()
 	for pid := range lastBusyAt {
@@ -204,28 +244,32 @@ func filterUseful(insts []Instance) []Instance {
 	return out
 }
 
-// fusedStatus 综合 statusline 流式信号 + 进程树工具执行信号 + 滞回,判定 busy/idle/unknown。
-//
-// 背景:Claude Code 在执行子进程类工具期间不调用 statusline,live 文件停止刷新,
-// 单靠 mtime 会把"正在跑工具"误判为 idle。引入进程树信号补救,并用滞回消除抖动:
-//   streaming    —— live 文件新鲜(statusline 正在刷新 = 模型流式输出/TUI 活跃)
-//   hasToolChild —— claude.exe 有非 MCP 的直接子进程(正在执行 Bash 等阻塞型工具)
-//   hasSignal    —— 有 live 或对话数据(用于区分 idle 与"无任何数据"的 unknown)
-func fusedStatus(pid int, streaming, hasToolChild, hasSignal bool, nowMs int64) string {
+// fusedStatus 优先采用 lifecycle hook 的权威状态；缺失/过期时回退到旧 heuristic。
+func fusedStatus(pid int, hook HookState, hasHook bool, hookMtimeMs int64, streaming, hasToolChild, hasSignal bool, nowMs int64) string {
+	if hasHook && nowMs-hookMtimeMs < hookFreshMs {
+		switch hook.Phase {
+		case "busy":
+			return "busy"
+		case "idle":
+			if hasSignal || hook.LastEvent == "Stop" {
+				return "idle"
+			}
+		}
+	}
 	if streaming || hasToolChild {
 		cacheMu.Lock()
 		lastBusyAt[pid] = nowMs
 		cacheMu.Unlock()
 		return "busy"
 	}
-	// 失去 busy 信号后宽限一段时间仍算 busy,平滑 statusline 零星刷新的空窗
+	// 失去 busy 信号后宽限一段时间仍算 busy，仅用于无 hook 的 legacy 路径平滑空窗。
 	cacheMu.RLock()
 	lb := lastBusyAt[pid]
 	cacheMu.RUnlock()
 	if lb > 0 && nowMs-lb < busyGraceMs {
 		return "busy"
 	}
-	if hasSignal {
+	if hasSignal || hasHook {
 		return "idle"
 	}
 	return "unknown"
@@ -331,9 +375,9 @@ func buildInstanceFromStaleLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int
 
 // buildInstanceFallback 在无新鲜 live 文件时构建实例(桥接未生效/实例刚启动)。
 // 回退到旧的 cwd+mtime 猜测;前端会标注"未接入实时"。
-func buildInstanceFallback(p claudeProc, sessionsByCwd map[string][]sessionMeta, used map[string]bool, nowMs int64) Instance {
+func buildInstanceFallback(p claudeProc, sessionsByCwd map[string][]sessionMeta, used map[string]bool, liveOwned map[string]bool, nowMs int64) Instance {
 	cwd := procCwd(p.pid)
-	sid, meta := matchSession(cwd, sessionsByCwd, used, nowMs)
+	sid, meta := matchSession(cwd, sessionsByCwd, used, liveOwned, nowMs)
 	si := &SessionInfo{
 		Pid:       p.pid,
 		SessionID: sid,
@@ -410,9 +454,15 @@ func indexProjectSessions() map[string][]sessionMeta {
 }
 
 // matchSession 在进程 cwd 对应的 jsonl 集合中匹配一个 sessionId。
-// 策略：优先未被独占且 mtime 最新（最活跃）的；全部被独占时（同 cwd 进程数 > jsonl 数）
-// 取 mtime 最新的共享展示，不标记 used。
-func matchSession(cwd string, sessionsByCwd map[string][]sessionMeta, used map[string]bool, nowMs int64) (string, *sessionMeta) {
+//
+//	used       —— 已被本轮其他 fallback 实例独占的 sessionId（同 cwd 多实例互斥）
+//	liveOwned  —— 已被 live 实例（statusline 桥接）精确占用的 sessionId
+//
+// liveOwned 的候选完全排除在外：它们有明确归属，被无 live 的新建实例抢走会导致
+// 「新建实例显示了别人的会话记录」。策略：在「未被 live 占用且未被独占」的候选里取
+// mtime 最新；全被独占则取（非 live 占用的）最新共享；若该 cwd 的 jsonl 全被 live 实例
+// 占用，说明本实例确无自己的会话（刚启动、尚未落盘），返回空，让前端显示启动中状态。
+func matchSession(cwd string, sessionsByCwd map[string][]sessionMeta, used map[string]bool, liveOwned map[string]bool, nowMs int64) (string, *sessionMeta) {
 	if cwd == "" {
 		return "", nil
 	}
@@ -424,6 +474,9 @@ func matchSession(cwd string, sessionsByCwd map[string][]sessionMeta, used map[s
 	bestAge := int64(1 << 62)
 	for i := range metas {
 		m := &metas[i]
+		if liveOwned[m.sessionID] {
+			continue
+		}
 		if used[m.sessionID] {
 			continue
 		}
@@ -436,14 +489,21 @@ func matchSession(cwd string, sessionsByCwd map[string][]sessionMeta, used map[s
 		used[best.sessionID] = true
 		return best.sessionID, best
 	}
-	// 候选均已被独占：取 mtime 最新的共享
-	latest := &metas[0]
+	// 候选均已被 fallback 实例独占：取（未被 live 占用的）mtime 最新共享
+	var latest *sessionMeta
 	for i := range metas {
-		if metas[i].mtimeMs > latest.mtimeMs {
+		if liveOwned[metas[i].sessionID] {
+			continue
+		}
+		if latest == nil || metas[i].mtimeMs > latest.mtimeMs {
 			latest = &metas[i]
 		}
 	}
-	return latest.sessionID, latest
+	if latest != nil {
+		return latest.sessionID, latest
+	}
+	// 该 cwd 的 jsonl 全被 live 实例占用：本实例还没有自己的会话（刚启动、尚未落盘）
+	return "", nil
 }
 
 func buildInstance(pid int, s *SessionInfo) Instance {

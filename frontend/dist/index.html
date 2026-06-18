@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="/style.css">
   <title>Claude Code 监控</title>
-  <script type="module" crossorigin src="/assets/index-CGDNOhzR.js"></script>
+  <script type="module" crossorigin src="/assets/index-FrslWopF.js"></script>
 </head>
 <body>
   <div id="app">
@@ -33,6 +33,14 @@
         <button class="sort-btn active" data-sort="updatedAt" data-dir="desc" onclick="handleSort('updatedAt')">最后活动 <span class="sort-arrow">↓</span></button>
         <button class="sort-btn" data-sort="startedAt" data-dir="desc" onclick="handleSort('startedAt')">建立时间 <span class="sort-arrow">↓</span></button>
         <button class="sort-btn" data-sort="contextTokens" data-dir="desc" onclick="handleSort('contextTokens')">Context 用量 <span class="sort-arrow">↓</span></button>
+        <span class="flex-spacer"></span>
+        <div class="dir-filter-wrap" id="dir-filter-wrap">
+          <button id="dir-filter-btn" class="filter-btn" onclick="toggleDirFilter(event)">📂 目录</button>
+          <div id="dir-filter-dropdown" class="dir-filter-dropdown hidden">
+            <label class="dir-filter-all"><input type="checkbox" id="dir-filter-selectall" onchange="onDirFilterAllChange()"> <span>全选</span></label>
+            <div id="dir-filter-list" class="dir-filter-list"></div>
+          </div>
+        </div>
       </div>
       <div id="cards"></div>
       <div id="empty-state" class="hidden">
@@ -93,6 +101,7 @@
       <div class="chat-header">
         <span class="chat-emoji">💬</span>
         <span class="chat-title" id="chat-title">会话</span>
+        <span class="chat-cwd" id="chat-cwd" title=""></span>
         <span class="chat-branch" id="chat-branch"></span>
         <span class="chat-model" id="chat-model"></span>
         <span class="flex-spacer"></span>
@@ -116,6 +125,21 @@
         <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="4" maxlength="4000"></textarea>
         <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
       </div>
+      <div class="chat-input-toolbar">
+        <span id="chat-hint" class="chat-hint hidden"></span>
+        <span class="flex-spacer"></span>
+        <button id="chat-rewind-btn" class="chat-rewind-btn" onclick="handleChatRewind()" title="回溯：在终端打开历史选择器">↺ 回溯</button>
+      </div>
+      <div class="chat-debug-keys hidden" id="chat-debug-keys">
+        <span class="debug-keys-label">🔧 调试键(点击注入单键到终端):</span>
+        <button class="debug-key-btn" onclick="sendText('j')" title="文本字符 j">j</button>
+        <button class="debug-key-btn" onclick="sendText('k')" title="文本字符 k">k</button>
+        <button class="debug-key-btn" onclick="sendKey('down')" title="键盘下方向键">↓</button>
+        <button class="debug-key-btn" onclick="sendKey('up')" title="键盘上方向键">↑</button>
+        <button class="debug-key-btn" onclick="sendKey('enter')" title="回车">⏎</button>
+        <button class="debug-key-btn" onclick="sendKey('space')" title="空格">␣</button>
+        <button class="debug-key-btn" onclick="sendKey('tab')" title="Tab">Tab</button>
+      </div>
       <div id="chat-stats" class="chat-stats hidden">
         <span class="chat-stat-group">
           <span class="chat-stat-label">Context</span>
@@ -131,7 +155,24 @@
     </div>
   </div>
 
-  <!-- 设置弹窗 -->
+  <!-- Claude settings.json 规则说明 -->
+  <div id="claude-settings-rules-overlay" class="modal-overlay hidden" onclick="if(event.target===this) hideClaudeSettingsRules()">
+    <div class="modal-dialog rules-dialog">
+      <div class="modal-header">
+        <span class="modal-emoji">🛠️</span>
+        <span class="modal-title">Claude settings.json 管理说明</span>
+      </div>
+      <div class="modal-subtitle">说明自动检查 / 自动修复的作用，以及本应用会如何修改 ~/.claude/settings.json。下面的配置片段可直接复制用于手动维护。</div>
+      <div class="rules-content" id="claude-settings-rules-content">
+        <div class="chat-empty">加载中...</div>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn btn-cancel" onclick="hideClaudeSettingsRules()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings 弹窗 -->
   <div id="settings-overlay" class="modal-overlay hidden" onclick="if(event.target===this) hideSettings()">
     <div class="settings-dialog">
       <div class="settings-layout">
@@ -179,15 +220,30 @@
             </div>
             <div class="settings-item">
               <div class="settings-item-text">
-                <span class="settings-label">新建实例跳过权限确认</span>
-                <span class="settings-desc">开启后，新建的 Claude Code 实例将跳过所有权限确认（--permission-mode bypassPermissions）</span>
+                <span class="settings-label">自动检查 Claude settings.json</span>
+                <span class="settings-desc">每 10 秒检查 ~/.claude/settings.json 是否仍保留监控器所需的 statusLine 与 lifecycle hooks 配置</span>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="toggle-launch-yolo" onchange="saveSetting('launchYolo', this.checked)">
+                <input type="checkbox" id="toggle-auto-check-claude-settings" onchange="saveSetting('autoCheckClaudeSettings', this.checked)">
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>
                 </span>
               </label>
+            </div>
+            <div class="settings-item" id="settings-item-auto-repair-claude-settings">
+              <div class="settings-item-text">
+                <span class="settings-label">自动修复 Claude settings.json</span>
+                <span class="settings-desc">检测到配置漂移后，自动恢复监控器需要的 statusLine 与 lifecycle hooks；关闭后只检测不修复</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-auto-repair-claude-settings" onchange="saveSetting('autoRepairClaudeSettings', this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+            <div class="settings-inline-help">
+              <button class="settings-text-btn" onclick="showClaudeSettingsRules()">查看 settings.json 修改规则与手动配置</button>
             </div>
           </div>
           <div id="settings-system" class="settings-section hidden">

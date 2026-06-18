@@ -1,37 +1,53 @@
 package monitor
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
 
-// ReleaseInfo GitHub 最新 release 信息。
+// ReleaseInfo 最新版本信息（从 latest.json manifest 解析）。
 type ReleaseInfo struct {
-	Version     string `json:"version"`     // 如 "v1.2.0"
+	Version     string `json:"version"`     // 如 "1.2.0"
 	Name        string `json:"name"`        // release 标题
 	Body        string `json:"body"`        // release notes (markdown)
 	DownloadURL string `json:"downloadUrl"` // 安装包下载地址
+	Signature   string `json:"signature"`   // minisign 签名文本（两行），下载后校验用
 	PublishedAt string `json:"publishedAt"`
 }
 
-// CheckLatestRelease 调用 GitHub API 获取最新 release。
-func CheckLatestRelease(owner, repo, token string) (*ReleaseInfo, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
+// minisignPublicKeyB64 是嵌入应用的 minisign 公钥（base64 编码的「两行公钥文本」）。
+// 由 `minisign -G` 生成密钥对后，把 claude-monitor.pub 的两行内容整体做一次 base64
+// 编码填入此处。私钥 claude-monitor.sec 绝不进仓库，仅本地用于发布签名。
+const minisignPublicKeyB64 = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgODc2MDRFNENERkM4QzJDNg0KUldUR3dzamZURTVnaDBpczh5REo2U3kza1VId25acGxsVDVueWMyUGFxczFKemVuWm9NWThWUG4NCg=="
 
+// manifestURL 指向最新 release 的 latest.json。
+// 走 GitHub Release CDN（对象存储），不计入 REST API 速率限额（旧版调
+// api.github.com 受未认证 60次/小时 限制）。该 URL 经 "latest" 重定向，只指向
+// 非预发布 release —— 发布时务必用正式 release，否则重定向会指向更旧的正式版。
+const manifestURL = "https://github.com/pie-tk/claude-code-monitor/releases/latest/download/latest.json"
+
+// signingPublicKey 解码嵌入的 minisign 公钥，返回两行文本。
+func signingPublicKey() (string, error) {
+	b, err := base64.StdEncoding.DecodeString(minisignPublicKeyB64)
+	if err != nil {
+		return "", fmt.Errorf("嵌入的 minisign 公钥无效（请用 minisign -G 生成并填入）: %w", err)
+	}
+	return string(b), nil
+}
+
+// CheckLatestRelease 下载 latest.json 静态 manifest 获取最新版本信息。
+// 走 GitHub Release CDN，不再调用受限的 REST API。
+func CheckLatestRelease() (*ReleaseInfo, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", manifestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "claude-code-monitor")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -39,57 +55,35 @@ func CheckLatestRelease(owner, repo, token string) (*ReleaseInfo, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 401 {
-		return nil, fmt.Errorf("GitHub Token 无效，请检查后重试")
-	}
-	if resp.StatusCode == 403 || resp.StatusCode == 429 {
-		return nil, fmt.Errorf("GitHub API 限流（未认证 60次/小时），如有开启网络代理或 VPN 可关闭后重试")
-	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GitHub API 返回 HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("获取 manifest 失败: HTTP %d", resp.StatusCode)
 	}
 
-	var apiResp struct {
-		TagName     string `json:"tag_name"`
-		Name        string `json:"name"`
-		Body        string `json:"body"`
-		PublishedAt string `json:"published_at"`
-		Assets      []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
+	var m struct {
+		Version   string `json:"version"`
+		Notes     string `json:"notes"`
+		PubDate   string `json:"pub_date"`
+		Platforms map[string]struct {
+			Signature string `json:"signature"`
+			URL       string `json:"url"`
+		} `json:"platforms"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, fmt.Errorf("解析 manifest 失败: %w", err)
 	}
 
-	// 优先匹配安装包，兼容旧版裸 exe
-	downloadURL := ""
-	for _, a := range apiResp.Assets {
-		name := strings.ToLower(a.Name)
-		if strings.HasPrefix(name, "claude-monitor-setup") && strings.HasSuffix(name, ".exe") {
-			downloadURL = a.BrowserDownloadURL
-			break
-		}
-	}
-	if downloadURL == "" {
-		for _, a := range apiResp.Assets {
-			if strings.HasSuffix(strings.ToLower(a.Name), ".exe") {
-				downloadURL = a.BrowserDownloadURL
-				break
-			}
-		}
-	}
-	if downloadURL == "" {
-		downloadURL = fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, apiResp.TagName)
+	win, ok := m.Platforms["windows-x86_64"]
+	if !ok {
+		return nil, fmt.Errorf("manifest 缺少 windows-x86_64 平台信息")
 	}
 
 	return &ReleaseInfo{
-		Version:     strings.TrimPrefix(apiResp.TagName, "v"),
-		Name:        apiResp.Name,
-		Body:        apiResp.Body,
-		DownloadURL: downloadURL,
-		PublishedAt: apiResp.PublishedAt,
+		Version:     strings.TrimPrefix(m.Version, "v"),
+		Name:        m.Version,
+		Body:        m.Notes,
+		DownloadURL: win.URL,
+		Signature:   win.Signature,
+		PublishedAt: m.PubDate,
 	}, nil
 }
 
@@ -106,14 +100,6 @@ func IsNewer(latest, current string) bool {
 		}
 	}
 	return false
-}
-
-// GitHubToken 优先读 GH_TOKEN，其次 GITHUB_TOKEN。
-func GitHubToken() string {
-	if t := os.Getenv("GH_TOKEN"); t != "" {
-		return t
-	}
-	return os.Getenv("GITHUB_TOKEN")
 }
 
 // parseSemver 解析 "1.2.3" 为 [3]int，解析失败返回全 0。

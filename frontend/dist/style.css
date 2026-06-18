@@ -177,6 +177,88 @@ body.dark .bridge-badge.warn { color: #f59e0b; }
   font-size: 8pt;
 }
 
+/* ===== 目录筛选下拉 ===== */
+.dir-filter-wrap {
+  position: relative;
+}
+.filter-btn {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 9pt;
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.filter-btn:hover {
+  border-color: var(--accent);
+  color: var(--window-text);
+}
+.dir-filter-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 500;
+  min-width: 240px;
+  max-width: 360px;
+  background: var(--window-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  padding: 6px;
+  font-size: 9pt;
+}
+.dir-filter-dropdown.hidden { display: none; }
+.dir-filter-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--divider);
+  margin-bottom: 4px;
+  color: var(--window-text);
+  font-weight: 500;
+  cursor: pointer;
+}
+.dir-filter-list {
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--card-border) transparent;
+}
+.dir-filter-list::-webkit-scrollbar { width: 5px; }
+.dir-filter-list::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+.dir-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--secondary-text);
+  cursor: pointer;
+}
+.dir-filter-item:hover { background: var(--tag-bg); }
+.dir-filter-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8.5pt;
+}
+
+/* 全部被筛选隐藏时的空态 */
+.filter-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--secondary-text);
+}
+.filter-empty .empty-icon { font-size: 28px; margin-bottom: 8px; }
+.filter-empty .empty-title { font-size: 11pt; color: var(--window-text); margin-bottom: 4px; }
+.filter-empty .empty-hint { font-size: 9pt; color: var(--subtle-text); }
+
 /* ===== Card ===== */
 .card {
   display: flex;
@@ -784,8 +866,67 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .settings-select:focus,
 .settings-select:hover { border-color: var(--accent); }
 
-/* ===== About Section ===== */
-.about-content {
+.settings-item.disabled {
+  opacity: 0.48;
+}
+.settings-item.disabled .settings-label,
+.settings-item.disabled .settings-desc {
+  color: var(--subtle-text);
+}
+.settings-item.disabled .toggle {
+  cursor: not-allowed;
+}
+.settings-item.disabled .toggle-track {
+  background: var(--divider);
+}
+.settings-inline-help {
+  padding-top: 6px;
+}
+.settings-text-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 8.5pt;
+  padding: 0;
+  cursor: pointer;
+}
+.settings-text-btn:hover {
+  text-decoration: underline;
+}
+.rules-dialog {
+  width: 720px;
+  max-height: 80vh;
+}
+.rules-content {
+  padding: 0 20px 18px;
+  overflow-y: auto;
+}
+.rules-section {
+  margin-top: 14px;
+}
+.rules-section:first-child {
+  margin-top: 0;
+}
+.rules-heading {
+  font-size: 10pt;
+  font-weight: 600;
+  color: var(--window-text);
+  margin-bottom: 6px;
+}
+.rules-text {
+  font-size: 9pt;
+  color: var(--secondary-text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.rules-code {
+  width: 100%;
+  min-height: 110px;
+  margin-top: 8px;
+  resize: vertical;
+}
   text-align: center;
   padding: 12px 0;
 }
@@ -946,6 +1087,19 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   border-radius: 3px;
 }
 .chat-branch:empty { display: none; }
+.chat-cwd {
+  font-size: 9pt;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  color: var(--subtle-text);
+  background: var(--tag-bg);
+  padding: 2px 8px;
+  border-radius: 3px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-cwd:empty { display: none; }
 .flex-spacer { flex: 1; }
 .chat-close-btn {
   background: none;
@@ -1175,6 +1329,38 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .chat-send-btn:hover { opacity: 0.9; }
 .chat-send-btn:disabled { opacity: 0.5; cursor: default; }
 
+/* 输入区下方的工具栏：左侧提示文案 + 右侧回溯按钮 */
+.chat-input-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px 10px;
+  flex-shrink: 0;
+}
+.chat-hint {
+  font-size: 8.5pt;
+  color: var(--secondary-text);
+  font-family: inherit;
+}
+.chat-hint.hidden { display: none; }
+.chat-rewind-btn {
+  padding: 4px 12px;
+  font-size: 8.5pt;
+  font-family: inherit;
+  font-weight: 500;
+  background: var(--card-bg);
+  color: var(--secondary-text);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.chat-rewind-btn:hover {
+  border-color: var(--accent);
+  color: var(--window-text);
+}
+
 /* ===== History expand button (on card) ===== */
 .history-header-spacer { flex: 1; }
 
@@ -1308,6 +1494,148 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 }
 .quick-reply-btn.nav:hover:not(:disabled) { opacity: 1; }
 .quick-reply-btn.nav:disabled { opacity: 0.3; cursor: default; }
+
+/* AskUserQuestion 选项带说明时:纵向满宽卡片(标签 + 说明),贴近 Claude Code 终端 UI */
+.ask-option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+}
+.quick-reply-btn.with-desc {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.45;
+}
+.quick-reply-btn.with-desc .ask-option-label {
+  font-weight: 600;
+  font-size: 10pt;
+}
+.quick-reply-btn.with-desc .ask-option-desc {
+  font-size: 8.5pt;
+  color: var(--subtle-text);
+  white-space: normal;
+  word-break: break-word;
+}
+/* primary 卡片(默认选中项):白字 */
+.quick-reply-btn.with-desc.primary .ask-option-label { color: #FFF; }
+.quick-reply-btn.with-desc.primary .ask-option-desc { color: rgba(255, 255, 255, 0.82); }
+
+/* AskUserQuestion 多选:勾选卡片(☑/☐ + 标签 + 说明)。用 grid 让复选框与标签同行、说明独占下行。 */
+.quick-reply-btn.ask-multi {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 2px 6px;
+}
+.quick-reply-btn.ask-multi .ask-multi-box {
+  grid-row: 1; grid-column: 1;
+  font-size: 12pt; line-height: 1.2;
+}
+.quick-reply-btn.ask-multi .ask-option-label {
+  grid-row: 1; grid-column: 2;
+  font-weight: 600; font-size: 10pt;
+}
+.quick-reply-btn.ask-multi .ask-option-desc {
+  grid-row: 2; grid-column: 1 / -1;
+  font-size: 8.5pt; color: var(--subtle-text);
+  white-space: normal; word-break: break-word;
+}
+.quick-reply-btn.ask-multi.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.quick-reply-btn.ask-multi.selected .ask-multi-box { color: var(--accent); }
+
+/* 多选「✓ 确认提交」按钮:满宽实心 */
+.quick-reply-btn.ask-submit {
+  width: 100%;
+  background: var(--accent);
+  color: #FFF;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.quick-reply-btn.ask-submit:hover { opacity: 0.85; }
+
+/* 「✍ 自定义输入」入口按钮(Type something) */
+.quick-reply-btn.ask-custom {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--card-bg);
+}
+.quick-reply-btn.ask-custom.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.quick-reply-btn.ask-custom:hover { background: var(--accent-soft); }
+
+/* 自定义输入态横幅 */
+.ask-custom-banner {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 9pt;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+.ask-custom-cancel {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 10pt;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+.ask-custom-cancel:hover { opacity: 0.7; }
+
+/* 调试键栏(临时,摸清 claude 选择 UI 响应后删除) */
+.chat-debug-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 20px;
+  border-top: 1px dashed var(--divider);
+  flex-shrink: 0;
+}
+.debug-keys-label {
+  font-size: 8.5pt;
+  color: var(--subtle-text);
+  margin-right: 4px;
+}
+.debug-key-btn {
+  padding: 3px 10px;
+  font-size: 9pt;
+  font-family: inherit;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--window-text);
+  cursor: pointer;
+  transition: all 0.15s;
+  min-width: 28px;
+}
+.debug-key-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 /* Interactive assistant message: highlight that agent is asking */
 .chat-msg-interactive {

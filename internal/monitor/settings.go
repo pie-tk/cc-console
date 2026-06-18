@@ -9,17 +9,21 @@ import (
 
 // Settings 持久化到 ~/.claude-monitor.json 的应用设置。
 type Settings struct {
-	ModelLimits      map[string]int64 `json:"modelLimits"`
-	CloseQuits       bool             `json:"closeQuits"`
-	AutoStart        bool             `json:"autoStart"`
-	BridgeEnabled    bool             `json:"bridgeEnabled"`    // statusline 桥接（默认启用）
-	RecentDirs       []string         `json:"recentDirs"`       // 最近工作目录（≤8，最近在前）
-	LaunchWindowMode string           `json:"launchWindowMode"` // 启动终端窗口模式: show 显示 / hide 最小化到任务栏
-	EnterToSend      bool             `json:"enterToSend"`      // 回车直接发送（默认 true）；false 时 Shift+Enter 发送
-	LaunchYolo       bool             `json:"launchYolo"`       // 新建实例时使用 bypassPermissions 模式（默认 true）
-	WindowWidth      int              `json:"windowWidth"`      // 主窗口宽度（启动恢复用）
-	WindowHeight     int              `json:"windowHeight"`     // 主窗口高度（启动恢复用）
-	WindowMaximised  bool             `json:"windowMaximised"`  // 主窗口上次是否最大化
+	ModelLimits              map[string]int64 `json:"modelLimits"`
+	CloseQuits               bool             `json:"closeQuits"`
+	AutoStart                bool             `json:"autoStart"`
+	BridgeEnabled            bool             `json:"bridgeEnabled"`            // statusline 桥接（默认启用）
+	AutoCheckClaudeSettings  bool             `json:"autoCheckClaudeSettings"`  // 每 10 秒检查 ~/.claude/settings.json 是否仍满足监控器要求
+	AutoRepairClaudeSettings bool             `json:"autoRepairClaudeSettings"` // 检测到漂移后是否自动修复 ~/.claude/settings.json
+	RecentDirs               []string         `json:"recentDirs"`               // 最近工作目录（≤8，最近在前）
+	LaunchWindowMode         string           `json:"launchWindowMode"`         // 启动终端窗口模式: show 显示 / hide 最小化到任务栏
+	EnterToSend              bool             `json:"enterToSend"`              // 回车直接发送（默认 true）；false 时 Shift+Enter 发送
+	LaunchYolo               bool             `json:"launchYolo"`               // 新建实例时使用 bypassPermissions 模式（默认 true）
+	WindowWidth              int              `json:"windowWidth"`              // 主窗口宽度（启动恢复用）
+	WindowHeight             int              `json:"windowHeight"`             // 主窗口高度（启动恢复用）
+	WindowMaximised          bool             `json:"windowMaximised"`          // 主窗口上次是否最大化
+	SortField                string           `json:"sortField"`                // 实例列表排序字段：updatedAt | startedAt | contextTokens
+	SortDir                  string           `json:"sortDir"`                  // 排序方向：asc | desc
 }
 
 var currentSettings Settings
@@ -38,11 +42,15 @@ func configPath() (string, error) {
 // LoadSettings 从磁盘加载设置，首次运行返回默认值。
 func LoadSettings() error {
 	currentSettings = Settings{
-		ModelLimits:      map[string]int64{},
-		BridgeEnabled:    true,       // 默认启用 statusline 桥接
-		LaunchWindowMode: "hide",     // 默认最小化到任务栏（不抢焦点）
-		EnterToSend:      true,       // 默认回车直接发送（Shift+Enter 换行）
-		LaunchYolo:       true,       // 默认 yolo 模式（跳过权限确认）
+		ModelLimits:              map[string]int64{},
+		BridgeEnabled:            true,        // 默认启用 statusline 桥接
+		AutoCheckClaudeSettings:  true,        // 默认启用 settings.json 健康检查
+		AutoRepairClaudeSettings: true,        // 默认启用 settings.json 自动修复
+		LaunchWindowMode:         "hide",      // 默认最小化到任务栏（不抢焦点）
+		EnterToSend:              true,        // 默认回车直接发送（Shift+Enter 换行）
+		LaunchYolo:               true,        // 默认 yolo 模式（跳过权限确认）
+		SortField:                "updatedAt", // 默认按最后活动排序
+		SortDir:                  "desc",      // 默认降序（最新在前）
 	}
 	path, err := configPath()
 	if err != nil {

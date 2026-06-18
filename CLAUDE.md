@@ -39,20 +39,28 @@
 
 ## 构建
 
-**任何修改后都必须同时构建便携版 exe 和安装包**，确保两个产物都是最新的。
+**任何修改后都必须同时构建便携版 exe 和安装包**，确保两个产物都是最新的。若改动涉及更新逻辑或发布链路，还要一并验证发布元数据流程。
 
 ```bash
-# 一键构建（推荐）— 便携版 exe + 安装包
+# 一键本地构建（推荐）— 便携版 exe + 安装包
 ./build.sh
 
-# 或分步手动执行：
-# 1. cd frontend && npm run build && cd ..
-# 2. go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
-# 3. powershell -Command "& 'C:\Users\PIE TK\AppData\Local\Programs\Inno Setup 6\ISCC.exe' /DMyAppVersion=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\(.*\)\".*/\1/') setup.iss"
+# 发布前构建（强制生成 .minisig 与 latest.json）
+./build.sh --release
+# 若本机已准备 `claude-monitor.local.sec`（免密、仅本地保存的签名副本），脚本会优先使用它，
+# 这样 Claude 可直接完成发布而无需交互输入口令。
 
 # 或使用 Taskfile
 task build
-task setup
+task release-build
+
+# 分步手动执行（仅限你明确知道自己还需要补签名与 manifest 时）：
+# 1. cd frontend && npm run build && cd ..
+# 2. go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
+# 3. go build -ldflags="-s -w" -o claude-monitor-sl.exe ./cmd/slhook && cp cmd/slhook/bridge.mjs bridge.mjs
+# 4. powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\(.*\)\".*/\1/') setup.iss"
+# 5. minisign -S -s claude-monitor.sec -m claude-monitor-setup.exe -x claude-monitor-setup.exe.minisig -t "claude-monitor v<version>"
+# 6. 按 build.sh 的 jq 模板生成 latest.json
 
 # CLI 模式（无 WebView，纯终端）
 go run . --list
@@ -60,13 +68,18 @@ go run . --list
 
 ## 发布
 
-每次发布只上传安装包到 GitHub Release：
+每次发布前必须先执行 `./build.sh --release`（或 `task release-build`），确认 `claude-monitor-setup.exe`、`claude-monitor-setup.exe.minisig`、`latest.json` 都已生成，再上传到 GitHub Release：
 
 ```bash
-gh release create v<version> ./claude-monitor-setup.exe --title "v<version>"
+gh release create v<version> ./claude-monitor-setup.exe ./latest.json ./claude-monitor-setup.exe.minisig --title "v<version>"
 ```
 
-Release 资产：`claude-monitor-setup.exe` — Inno Setup 安装包（不传便携版，容易被杀软误报）
+Release 资产：
+- `claude-monitor-setup.exe` — Inno Setup 安装包
+- `latest.json` — 更新检查读取的 manifest（必需）
+- `claude-monitor-setup.exe.minisig` — 对安装包的 minisign 签名（必需）
+
+注意：自动更新读取 `releases/latest/download/latest.json`，所以发布时务必使用**正式 release**，不要设为 prerelease。
 
 ## 开发
 
