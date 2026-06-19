@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"claude-monitor/internal/monitor"
-	"claude-monitor/internal/theme"
+	"cc-console/internal/monitor"
+	"cc-console/internal/theme"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -261,7 +261,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.3.8"
+const Version = "1.3.9"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {

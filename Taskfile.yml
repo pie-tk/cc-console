@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  APP_NAME: "claude-monitor"
+  APP_NAME: "cc-console"
   BIN_DIR: "bin"
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
   VERSION:

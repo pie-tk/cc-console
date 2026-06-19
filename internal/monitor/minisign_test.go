@@ -52,7 +52,7 @@ func signMinisignFileText(sk ed25519.PrivateKey, message []byte) string {
 
 func TestVerifyMinisign_Valid(t *testing.T) {
 	pubText, sk := makeMinisignKeyPair(t)
-	msg := []byte("hello claude-monitor update")
+	msg := []byte("hello cc-console update")
 	if err := VerifyMinisign(pubText, signMinisignED(sk, msg), msg); err != nil {
 		t.Fatalf("合法签名应校验通过，却失败: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestVerifyMinisign_Valid(t *testing.T) {
 
 func TestVerifyMinisign_FourLineSignature(t *testing.T) {
 	pubText, sk := makeMinisignKeyPair(t)
-	msg := []byte("hello claude-monitor update")
+	msg := []byte("hello cc-console update")
 	if err := VerifyMinisign(pubText, signMinisignFileText(sk, msg), msg); err != nil {
 		t.Fatalf("标准四行签名应校验通过，却失败: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestVerifyMinisign_FourLineSignature(t *testing.T) {
 
 func TestVerifyMinisign_TamperedMessage(t *testing.T) {
 	pubText, sk := makeMinisignKeyPair(t)
-	msg := []byte("hello claude-monitor update")
+	msg := []byte("hello cc-console update")
 	sig := signMinisignED(sk, msg)
 
 	tampered := append([]byte(nil), msg...)

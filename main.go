@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"claude-monitor/internal/crashlog"
-	"claude-monitor/internal/monitor"
+	"cc-console/internal/crashlog"
+	"cc-console/internal/monitor"
 )
 
 //go:embed icon.ico
@@ -41,27 +41,27 @@ func main() {
 			}
 			return
 		case "-h", "--help", "help":
-			fmt.Println("claude-monitor              启动 GUI 监控窗口（系统托盘常驻，每 1 秒刷新）")
-			fmt.Println("claude-monitor --list       以命令行表格形式打印一次后退出")
+			fmt.Println("cc-console                  启动 GUI 监控窗口（系统托盘常驻，每 1 秒刷新）")
+			fmt.Println("cc-console --list           以命令行表格形式打印一次后退出")
 			return
 		}
 	}
 
 	// GUI 路径：初始化崩溃日志，捕获 panic / Go runtime fatal error 堆栈到
-	// ~/.claude-monitor/logs/monitor.log。CLI --list 模式不重定向，保持终端输出正常。
+	// ~/.cc-console/logs/monitor.log。CLI --list 模式不重定向，保持终端输出正常。
 	crashlog.Setup(monitorLogDir())
 	defer crashlog.Recover()
 
 	runWailsApp()
 }
 
-// monitorLogDir 返回应用日志目录 ~/.claude-monitor/logs（home 不可用时回退临时目录）。
+// monitorLogDir 返回应用日志目录 ~/.cc-console/logs（home 不可用时回退临时目录）。
 func monitorLogDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(os.TempDir(), "claude-monitor", "logs")
+		return filepath.Join(os.TempDir(), "cc-console", "logs")
 	}
-	return filepath.Join(home, ".claude-monitor", "logs")
+	return filepath.Join(home, ".cc-console", "logs")
 }
 
 func runList() {

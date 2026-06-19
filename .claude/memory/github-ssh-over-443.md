@@ -23,4 +23,4 @@ Host github.com
 - `IdentitiesOnly yes` is required, else ssh offers all keys and GitHub rejects with too-many-auth-failures.
 - Verify with `ssh -T git@github.com` (exits 1 even on success; look for "Hi pie-tk!").
 
-Verified 2026/06/09: auth + push of the [[claude-code-instance-detection]] monitor repo (`github.com/pie-tk/claude-code-monitor`) both succeeded over 443. If 443 ever also breaks, fall back to HTTPS + a Personal Access Token (port 443 HTTPS is reliable here).
+Verified 2026/06/09: auth + push of the [[claude-code-instance-detection]] monitor repo (`github.com/pie-tk/cc-console`) both succeeded over 443. If 443 ever also breaks, fall back to HTTPS + a Personal Access Token (port 443 HTTPS is reliable here).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — 一键构建 claude-code-monitor（便携版 exe + Inno Setup 安装包）
+# build.sh — 一键构建 cc-console（便携版 exe + Inno Setup 安装包）
 # 用法:
 #   ./build.sh           # 本地构建，可跳过更新发布元数据
 #   ./build.sh --release # 发布构建，强制生成 .minisig 与 latest.json
@@ -21,8 +21,8 @@ fi
 unset GOROOT
 
 VERSION=$(grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/\1/')
-MINISIGN_KEY="claude-monitor.sec"
-MINISIGN_KEY_LOCAL="claude-monitor.local.sec"
+MINISIGN_KEY="cc-console.sec"
+MINISIGN_KEY_LOCAL="cc-console.local.sec"
 
 echo "=== 1/7 前端构建 ==="
 cd frontend && npm run build && cd ..
@@ -35,11 +35,11 @@ RSRC="$(go env GOPATH | tr -d '"')/bin/rsrc"
 
 echo ""
 echo "=== 3/7 Go 编译便携版 ==="
-go build -ldflags="-H windowsgui -s -w" -o claude-monitor.exe .
+go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .
 
 echo ""
 echo "=== 4/7 编译 statusline 桥接 helper ==="
-go build -ldflags="-s -w" -o claude-monitor-sl.exe ./cmd/slhook
+go build -ldflags="-s -w" -o cc-console-sl.exe ./cmd/slhook
 cp cmd/slhook/bridge.mjs bridge.mjs
 
 echo ""
@@ -63,8 +63,8 @@ elif ! command -v jq >/dev/null 2>&1; then
   echo "⚠️  未安装 jq，跳过签名与 manifest（本地构建允许；发布请用 ./build.sh --release）"
 elif [ -f "$MINISIGN_KEY_LOCAL" ]; then
   echo "使用免密本地签名副本 $MINISIGN_KEY_LOCAL"
-  minisign -S -s "$MINISIGN_KEY_LOCAL" -m claude-monitor-setup.exe -x claude-monitor-setup.exe.minisig -t "claude-monitor v$VERSION"
-  echo "已生成 claude-monitor-setup.exe.minisig"
+  minisign -S -s "$MINISIGN_KEY_LOCAL" -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v$VERSION"
+  echo "已生成 cc-console-setup.exe.minisig"
 
   echo ""
   echo "=== 7/7 生成 latest.json manifest ==="
@@ -72,7 +72,7 @@ elif [ -f "$MINISIGN_KEY_LOCAL" ]; then
   # 完整四行 .minisig 仍作为独立 release asset 上传，供外部验证工具使用。
   SIG="$(python - <<'PY'
 from pathlib import Path
-lines = Path('claude-monitor-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
+lines = Path('cc-console-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
 if len(lines) < 2:
     raise SystemExit('invalid minisign file')
 print('\n'.join(lines[:2]), end='')
@@ -87,15 +87,15 @@ PY
        pub_date: $date,
        platforms: { "windows-x86_64": {
          signature: $sig,
-         url: ("https://github.com/pie-tk/claude-code-monitor/releases/download/v" + $ver + "/claude-monitor-setup.exe")
+         url: ("https://github.com/pie-tk/cc-console/releases/download/v" + $ver + "/cc-console-setup.exe")
        } }
      }' > latest.json
   echo "已生成 latest.json"
 elif [ -f "$MINISIGN_KEY" ]; then
   if [ "$RELEASE_MODE" -eq 1 ]; then
     echo "使用加密私钥 $MINISIGN_KEY 签名（将提示输入口令）"
-    minisign -S -s "$MINISIGN_KEY" -m claude-monitor-setup.exe -x claude-monitor-setup.exe.minisig -t "claude-monitor v$VERSION"
-    echo "已生成 claude-monitor-setup.exe.minisig"
+    minisign -S -s "$MINISIGN_KEY" -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v$VERSION"
+    echo "已生成 cc-console-setup.exe.minisig"
 
     echo ""
     echo "=== 7/7 生成 latest.json manifest ==="
@@ -103,7 +103,7 @@ elif [ -f "$MINISIGN_KEY" ]; then
     # 完整四行 .minisig 仍作为独立 release asset 上传，供外部验证工具使用。
     SIG="$(python - <<'PY'
 from pathlib import Path
-lines = Path('claude-monitor-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
+lines = Path('cc-console-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
 if len(lines) < 2:
     raise SystemExit('invalid minisign file')
 print('\n'.join(lines[:2]), end='')
@@ -118,7 +118,7 @@ PY
          pub_date: $date,
          platforms: { "windows-x86_64": {
            signature: $sig,
-           url: ("https://github.com/pie-tk/claude-code-monitor/releases/download/v" + $ver + "/claude-monitor-setup.exe")
+           url: ("https://github.com/pie-tk/cc-console/releases/download/v" + $ver + "/cc-console-setup.exe")
          } }
        }' > latest.json
     echo "已生成 latest.json"
@@ -130,10 +130,10 @@ fi
 
 echo ""
 echo "=== 完成 ==="
-ls -lh claude-monitor.exe claude-monitor-sl.exe claude-monitor-setup.exe
-if [ -f claude-monitor-setup.exe.minisig ] && [ -f latest.json ]; then
+ls -lh cc-console.exe cc-console-sl.exe cc-console-setup.exe
+if [ -f cc-console-setup.exe.minisig ] && [ -f latest.json ]; then
   echo ""
-  echo "发布产物：claude-monitor-setup.exe / claude-monitor-setup.exe.minisig / latest.json"
+  echo "发布产物：cc-console-setup.exe / cc-console-setup.exe.minisig / latest.json"
 else
   echo ""
   echo "本次未生成发布元数据；正式发布前请执行 ./build.sh --release"

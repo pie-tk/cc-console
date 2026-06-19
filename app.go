@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"claude-monitor/internal/crashlog"
-	"claude-monitor/internal/monitor"
-	"claude-monitor/service"
+	"cc-console/internal/crashlog"
+	"cc-console/internal/monitor"
+	"cc-console/service"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -21,7 +21,7 @@ func runWailsApp() {
 	svc := service.NewMonitorService()
 
 	app := application.New(application.Options{
-		Name:        "Claude Code 监控",
+		Name:        "CC Console",
 		Description: "实时监控本机运行中的所有 Claude Code 实例",
 		Icon:        trayIconBytes,
 		Services: []application.Service{
@@ -31,7 +31,7 @@ func runWailsApp() {
 			Handler: application.AssetFileServerFS(assets),
 		},
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "claude-monitor-ebc9d7a2",
+			UniqueID: "cc-console-ebc9d7a2",
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				// 第二个实例启动时，显示已有窗口
 				win := svc.GetWindow()
@@ -49,7 +49,7 @@ func runWailsApp() {
 	// 读取已保存的窗口几何，恢复用户上次的缩放大小（无记录或损坏时用默认值）
 	geo := monitor.GetWindowGeometry()
 	winOpts := application.WebviewWindowOptions{
-		Title:            "Claude Code 监控",
+		Title:            "CC Console",
 		Width:            1040,
 		Height:           680,
 		MinWidth:         660,
@@ -71,7 +71,7 @@ func runWailsApp() {
 	// ---- 系统托盘 ----
 	tray := app.SystemTray.New()
 	tray.SetIcon(trayIconBytes)
-	tray.SetTooltip("Claude Code 监控")
+	tray.SetTooltip("CC Console")
 
 	// 单击托盘图标 = 显示窗口
 	tray.OnClick(func() {
@@ -124,7 +124,7 @@ func runWailsApp() {
 			live, stale, _ := monitor.Detect()
 			busy := monitor.CountStatus(live, "busy")
 			idle := monitor.CountStatus(live, "idle")
-			tooltip := fmt.Sprintf("Claude Code 监控\n在线 %d (🔴 忙碌 %d · 🟢 空闲 %d)", len(live), busy, idle)
+			tooltip := fmt.Sprintf("CC Console\n在线 %d (🔴 忙碌 %d · 🟢 空闲 %d)", len(live), busy, idle)
 			if len(stale) > 0 {
 				tooltip += fmt.Sprintf("\n残留 %d", len(stale))
 			}

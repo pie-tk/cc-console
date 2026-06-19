@@ -1,30 +1,30 @@
 // 直接使用 Wails runtime Call.ByID，绕过自动绑定的循环依赖问题
-// ID 取自自动生成的 frontend/bindings/claude-monitor/service/monitorservice.js
+// ID 取自自动生成的 frontend/bindings/cc-console/service/monitorservice.js
 import { Call, Events } from "@wailsio/runtime";
 
-// Binding IDs (FNV hash of fully qualified method names)
-const ID_DETECT      = 2236708032;
-const ID_GET_THEME   = 1324148558;
-const ID_GET_CLOCK   = 3525810521;
-const ID_ACT_CLEAR   = 2684523210;
-const ID_ACT_REWIND  = 765506358;
-const ID_ACT_PROMPT  = 3578199235;
-const ID_ACT_SHOW    = 3029513688;
-const ID_GET_SETTINGS  = 4111710580;
-const ID_SAVE_SETTINGS = 2821561663;
-const ID_GET_BRIDGE_STATUS = 3146505974;
-const ID_ENABLE_BRIDGE = 2832995149;
-const ID_GET_BRIDGE_RULES = 3926351507;
-const ID_OPEN_URL         = 2662437060;
-const ID_CHECK_UPDATE     = 2276698880;
-const ID_DOWNLOAD_UPDATE  = 1405235130;
-const ID_GET_CHAT_HISTORY  = 3915737321;
-const ID_GET_RECENT_DIRS   = 3059062206;
-const ID_LAUNCH_INSTANCE   = 3964521291;
-const ID_PICK_DIRECTORY    = 3885139809;
-const ID_GET_COMMANDS      = 4004856507; // GetCommandSuggestions(pid)
-const ID_SAVE_LIST_PREFS   = 1375619032; // SaveListPrefs(sortField, sortDir)
-const ID_ACT_ASK_ANSWER    = 1988866268; // ActAskAnswer(pid, actionsJSON) — AskUserQuestion 按键序列注入
+// Binding IDs (FNV-1a hash of "cc-console/service.MonitorService.<Method>")
+const ID_DETECT = 3511002957;
+const ID_GET_THEME = 397350041;
+const ID_GET_CLOCK = 3994026554;
+const ID_ACT_CLEAR = 545766049;
+const ID_ACT_REWIND = 1735111375;
+const ID_ACT_PROMPT = 1205864218;
+const ID_ACT_SHOW = 970284573;
+const ID_GET_SETTINGS = 236910689;
+const ID_SAVE_SETTINGS = 2628092832;
+const ID_GET_BRIDGE_STATUS = 1164906267;
+const ID_ENABLE_BRIDGE = 1918911982;
+const ID_GET_BRIDGE_RULES = 4094932612;
+const ID_OPEN_URL = 3952279129;
+const ID_CHECK_UPDATE = 1254307161;
+const ID_DOWNLOAD_UPDATE = 271309265;
+const ID_GET_CHAT_HISTORY = 1507566330;
+const ID_GET_RECENT_DIRS = 2735810815;
+const ID_LAUNCH_INSTANCE = 1221198416;
+const ID_PICK_DIRECTORY = 432997876;
+const ID_GET_COMMANDS = 266082154; // GetCommandSuggestions(pid)
+const ID_SAVE_LIST_PREFS = 3233443589; // SaveListPrefs(sortField, sortDir)
+const ID_ACT_ASK_ANSWER = 1941433663; // ActAskAnswer(pid, actionsJSON) — AskUserQuestion 按键序列注入
 
 // ---- State ----
 let currentPids = [];
@@ -38,15 +38,16 @@ let chatRefreshTimer = null;
 let lastChatMessages = [];      // 最近一次渲染的消息，供未变 hash 时重新评估交互按钮
 let lastReplySignature = '';    // 上次注入的快速回复签名，避免每秒重复 innerHTML 重写
 // 处理中/完成指示器（复刻 Claude Code 风格）：处理中随机切换动词（Channeling…），
-// 完成时显示「动词过去式 + 用时」（Crunched for 33s）。状态机：idle → processing → completed → idle。
+// 时间从 Claude Code 实际进入任务执行时刻起算；完成后保留最终用时，直到下一轮任务覆盖。
 let procState = 'idle';        // idle | processing | completed
-let procStartTime = 0;         // 本轮处理开始时刻(ms)，用于完成时计算用时
+let procStartTime = 0;         // 本轮处理开始时刻(ms)
 let procVerbIdx = 0;           // 当前 spinner 动词下标
 let procHasBeenBusy = false;   // 本轮是否经历过 busy（用于区分「处理完成」与「乐观窗口内尚未 busy」）
 let procOptimistic = false;    // 发送后乐观窗口（status 变 busy 前的空窗）
-let procCompletionText = '';   // 完成态文案
+let procCompletionText = '';   // 完成态文案（含最终用时）
+let procTaskStartTime = 0;     // 后端上报的真实任务开始时刻(ms)
+let procCompletedTurnEnd = 0;  // 当前已展示为「完成」的轮次结束时刻(ms)，用于跨面板重开判定是否需重算
 let verbSwitchTimer = null;    // 处理中动词切换定时器
-let completionTimer = null;    // 完成态停留定时器
 let optimisticTimer = null;    // 乐观窗口兜底定时器
 
 // Claude Code 风格的 spinner 动词（处理中 gerund + 完成时 past）。取自其动词表的常见词。
@@ -322,6 +323,7 @@ function renderCards(live, stale) {
       bridgeConnected: !!inst.bridgeConnected,
       costUsd: inst.costUsd || 0,
       durationMs: inst.durationMs || 0,
+      taskStartedAt: inst.taskStartedAt || 0,
       totalInputTokens: inst.totalInputTokens || 0,
       totalOutputTokens: inst.totalOutputTokens || 0,
       totalCacheTokens: inst.totalCacheTokens || 0,
@@ -1241,12 +1243,14 @@ function historyHTML(inst) {
   header += '<span class="history-header-spacer"></span>';
   header += '<button class="history-expand-btn" onclick="event.stopPropagation(); openChatPanel(' + inst.pid + ')" title="展开完整会话">⛶</button>';
   header += '</div>';
+  // 卡片只展示最新一轮（提问 + 回复各一行，超出省略），更多记录点「对话」或 ⛶ 进入面板查看
   var items = '';
-  for (var i = 0; i < inst.history.length; i++) {
-    var t = inst.history[i];
+  var last = inst.history.length - 1;
+  if (last >= 0) {
+    var t = inst.history[last];
     items += '<div class="history-turn">'
-      + '<div class="history-q">📝 ' + escHtml(t.q || "") + '</div>'
-      + '<div class="history-r">🤖 ' + escHtml(t.r || "") + '</div>'
+      + '<div class="history-q" title="' + escAttr(t.q || "") + '">📝 ' + escHtml(t.q || "") + '</div>'
+      + '<div class="history-r" title="' + escAttr(t.r || "") + '">🤖 ' + escHtml(t.r || "") + '</div>'
       + '</div>';
   }
   return '<div class="card-history" data-hist-hash="' + (inst.historyHash || 0) + '">' + header + items + '</div>';
@@ -1456,18 +1460,16 @@ function procFormatDuration(ms) {
 
 function procClearTimers() {
   if (verbSwitchTimer) { clearTimeout(verbSwitchTimer); verbSwitchTimer = null; }
-  if (completionTimer) { clearTimeout(completionTimer); completionTimer = null; }
   if (optimisticTimer) { clearTimeout(optimisticTimer); optimisticTimer = null; }
 }
 
 function procRandomVerbIdx() { return Math.floor(Math.random() * SPINNER_VERBS.length); }
 
 // startProcessing：进入处理中态，开始计时 + 随机选动词 + 定期切换。
-function startProcessing() {
-  procStartTime = Date.now();
+function startProcessing(startAt) {
+  procStartTime = startAt || Date.now();
   procVerbIdx = procRandomVerbIdx();
   procState = 'processing';
-  procHasBeenBusy = false;
   procRender();
   procScheduleVerbSwitch();
 }
@@ -1485,18 +1487,77 @@ function procScheduleVerbSwitch() {
   }, 3500);
 }
 
-// completeProcessing：进入完成态，显示「动词过去式 + 用时」，停留 4s 后消失。
-function completeProcessing() {
-  if (completionTimer) clearTimeout(completionTimer);
+// completeProcessing：实时完成态（刚从 busy 转入 idle）。turn 可能为 null（JSONL 滞后，
+// 末条 assistant 尚未落盘），此时用当前时刻兜底；有则用对话时间戳精确还原用时与完成时刻。
+function completeProcessing(turn) {
   if (verbSwitchTimer) { clearTimeout(verbSwitchTimer); verbSwitchTimer = null; }
-  var dur = procFormatDuration(Date.now() - procStartTime);
-  procCompletionText = SPINNER_VERBS[procVerbIdx].ed + ' for ' + dur;
+  var endAt = (turn && turn.endTs) ? turn.endTs : Date.now();
+  var startAt = (turn && turn.startTs) ? turn.startTs : (procTaskStartTime || procStartTime || endAt);
+  var dur = procFormatDuration(endAt - startAt);
+  procCompletionText = SPINNER_VERBS[procVerbIdx].ed + ' · ' + dur + ' · ' + tsFinishedAtLabel(endAt);
+  procCompletedTurnEnd = (turn && turn.endTs) ? turn.endTs : endAt;
   procState = 'completed';
+  procOptimistic = false;
   procRender();
-  completionTimer = setTimeout(function() {
-    procState = 'idle';
-    procRender();
-  }, 4000);
+}
+
+// showCompletedFromTurn：静态完成态——面板（重）打开时最后一轮已完成，用对话时间戳恢复
+// 「完成时刻 + 用时」。这样关闭重开、或任务结束后才打开面板，完成时间仍能显示。
+function showCompletedFromTurn(turn) {
+  if (!turn) return;
+  procClearTimers();
+  var startAt = turn.startTs || procTaskStartTime || turn.endTs;
+  var dur = procFormatDuration(turn.endTs - startAt);
+  procCompletionText = '✓ 已完成 · ' + dur + ' · ' + tsFinishedAtLabel(turn.endTs);
+  procCompletedTurnEnd = turn.endTs;
+  procState = 'completed';
+  procOptimistic = false;
+  procRender();
+}
+
+// lastCompletedTurn 从最近渲染的消息推导「最后一个已完成轮次」的时间区间。
+// 返回 {startTs, endTs}：endTs=最后一条 assistant 消息落盘时刻，
+// startTs=同轮次内最后一条真实用户提问时刻（取不到则 0）。
+// 末尾无 assistant 回复（任务进行中）→ 返回 null。
+function lastCompletedTurn() {
+  var msgs = lastChatMessages;
+  if (!msgs || msgs.length === 0) return null;
+  var endIdx = -1, endTs = 0;
+  for (var i = msgs.length - 1; i >= 0; i--) {
+    var m = msgs[i];
+    if (m.role === 'assistant' && m.ts) { endIdx = i; endTs = m.ts; break; }
+  }
+  if (endIdx < 0) return null;
+  var startTs = 0;
+  for (var j = endIdx; j >= 0; j--) {
+    var u = msgs[j];
+    if (u.role === 'user' && !isAnnotationOnly(u.content || '') && u.ts) { startTs = u.ts; break; }
+  }
+  return { startTs: startTs, endTs: endTs };
+}
+
+// tsFinishedAtLabel 把 epoch 毫秒格式化为「完成于 HH:MM:SS」（ts 缺失返回空串）。
+function tsFinishedAtLabel(ts) {
+  if (!ts) return '';
+  var d = new Date(ts);
+  var h = String(d.getHours()).padStart(2, '0');
+  var m = String(d.getMinutes()).padStart(2, '0');
+  var s = String(d.getSeconds()).padStart(2, '0');
+  return '完成于 ' + h + ':' + m + ':' + s;
+}
+
+// hasChatContent 判断消息区是否已有「真实对话内容」——至少一条 assistant 回复、
+// 一次工具调用，或一条非注解的用户提问。全新空会话返回 false，
+// 用于抑制空面板因 busy 状态误显示处理中动效。
+function hasChatContent() {
+  var msgs = lastChatMessages;
+  if (!msgs || msgs.length === 0) return false;
+  for (var i = 0; i < msgs.length; i++) {
+    var m = msgs[i];
+    if (m.role === 'assistant' || m.role === 'tool_use') return true;
+    if (m.role === 'user' && !isAnnotationOnly(m.content || '')) return true;
+  }
+  return false;
 }
 
 // procReset：清空所有状态与定时器，隐藏指示器。
@@ -1505,12 +1566,16 @@ function procReset() {
   procState = 'idle';
   procOptimistic = false;
   procHasBeenBusy = false;
+  procTaskStartTime = 0;
+  procCompletedTurnEnd = 0;
   procRender();
 }
 
 // showProcessingOptimistic：发送消息后立即乐观进入处理中态（status 变 busy 前的空窗）。
 function showProcessingOptimistic() {
   procOptimistic = true;
+  procHasBeenBusy = false;
+  procTaskStartTime = 0;
   if (optimisticTimer) clearTimeout(optimisticTimer);
   optimisticTimer = setTimeout(function() { procOptimistic = false; procUpdate(); }, 30000);
   startProcessing();
@@ -1526,7 +1591,9 @@ function procRender() {
   el.classList.toggle('completed', procState === 'completed');
   var textEl = el.querySelector('.chat-processing-text');
   if (procState === 'processing') {
-    if (textEl) textEl.textContent = SPINNER_VERBS[procVerbIdx].ing + '…';
+    var startAt = procTaskStartTime || procStartTime || Date.now();
+    var dur = procFormatDuration(Date.now() - startAt);
+    if (textEl) textEl.textContent = SPINNER_VERBS[procVerbIdx].ing + '… · ' + dur;
   } else {
     if (textEl) textEl.textContent = procCompletionText;
   }
@@ -1538,23 +1605,59 @@ function procRender() {
 }
 
 // procUpdate：每秒由 renderChatStats 调用，驱动 idle↔processing↔completed 状态机。
+// 关键改进：
+//   1) 全新空会话（无真实消息内容）即使实例 status=busy 也不显示处理中动效，
+//      避免空面板因状态抖动误显示动效与计时（乐观窗口 procOptimistic 例外）。
+//   2) 任务完成时间基于对话时间戳推导：面板（重）打开时若最后一轮已完成，
+//      直接恢复完成态，使「关闭重开」「任务结束后才打开」也能看到完成时间。
 function procUpdate() {
   var el = document.getElementById('chat-processing');
   if (!el) return;
   if (chatPanelPid === null) { procReset(); return; }
   var meta = instanceMeta[chatPanelPid];
-  if (!meta) { procReset(); return; } // 实例已退出
+  if (!meta) { return; } // 实例已退出，保留最后完成态文案
+  if (meta.taskStartedAt > 0) {
+    procTaskStartTime = meta.taskStartedAt;
+  }
   var busy = meta.status === 'busy';
+  var turn = lastCompletedTurn();
+
   if (busy) {
+    // 空会话（无消息内容）不因 busy 误显示；乐观窗口（用户刚发送）允许显示
+    if (!hasChatContent() && !procOptimistic) { procReset(); return; }
     procHasBeenBusy = true;
-    if (procState !== 'processing') startProcessing(); // 非用户触发的处理也开始计时
-  } else if (procState === 'processing') {
+    procCompletedTurnEnd = 0; // 新任务开始，作废已展示的完成轮次
+    if (procState !== 'processing') startProcessing(procTaskStartTime || Date.now());
+    else procRender();
+    return;
+  }
+
+  // idle
+  if (procState === 'processing') {
     if (procHasBeenBusy) {
-      completeProcessing(); // 经历 busy 后空闲 → 完成，显示用时
-    } else if (!procOptimistic) {
-      procReset(); // 乐观窗口已过且从未 busy → 放弃
+      // 实时完成：刚从 busy 转入 idle（turn 可能因 JSONL 滞后为 null，兜底用 Date.now）
+      completeProcessing(turn);
+    } else if (procOptimistic) {
+      // 乐观窗口内尚未变 busy，保持处理中动效
+      procRender();
+    } else if (turn) {
+      // 末尾已有完成的轮次 → 静态展示完成
+      showCompletedFromTurn(turn);
+    } else {
+      procReset();
     }
-    // 否则：乐观窗口内尚未 busy，继续显示 processing
+    return;
+  }
+
+  // procState === 'idle' | 'completed'：面板打开/重开后的稳态判定
+  if (turn) {
+    if (procState !== 'completed' || procCompletedTurnEnd !== turn.endTs) {
+      showCompletedFromTurn(turn); // 新完成的轮次或尚未展示 → 用时间戳恢复完成态
+    } else {
+      procRender(); // 同一轮次，保持已展示的完成态
+    }
+  } else {
+    procReset();
   }
 }
 
@@ -1647,6 +1750,17 @@ window.handleChatRewind = async function() {
     await Call.ByID(ID_ACT_SHOW, chatPanelPid);   // 把该实例终端置前，立刻看到选择器
   } catch (e) {
     showChatHint('回溯失败: ' + (e && e.message ? e.message : String(e)));
+  }
+};
+
+// handleChatShowWin：把该实例终端窗口置前，功能与首页卡片「窗口」按钮一致。
+window.handleChatShowWin = async function() {
+  if (!chatPanelPid) return;
+  try {
+    await Call.ByID(ID_ACT_SHOW, chatPanelPid);
+    showChatHint('🪟 已将该实例窗口置前');
+  } catch (e) {
+    showChatHint('置前失败: ' + (e && e.message ? e.message : String(e)));
   }
 };
 
@@ -2396,23 +2510,6 @@ function finishAskInteraction() {
   showProcessingOptimistic();
 }
 
-// ---- 调试键:逐个注入单键到终端,摸清 claude 选择 UI 的真实响应(临时,验证后删除) ----
-// sendText 注入一个文本字符(如 j/k/数字);sendKey 注入一个控制键(方向键/回车/空格/Tab)。
-window.sendText = async function(ch) {
-  if (!chatPanelPid) return;
-  try {
-    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ text: ch }]));
-    showChatHint('已发送文本: ' + ch);
-  } catch (e) { showChatHint('发送失败: ' + (e && e.message ? e.message : e)); }
-};
-window.sendKey = async function(key) {
-  if (!chatPanelPid) return;
-  try {
-    await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: key }]));
-    showChatHint('已发送键: ' + key);
-  } catch (e) { showChatHint('发送失败: ' + (e && e.message ? e.message : e)); }
-};
-
 // ---- 消息框草稿：按 pid+cwd 存储，关闭面板后保留，发送后清除 ----
 function chatDraftKey() {
   if (!chatPanelPid) return null;
@@ -2752,17 +2849,20 @@ function shouldSendOnEnter(e) {
 function updateClaudeSettingsToggleState() {
   var autoCheck = document.getElementById("toggle-auto-check-claude-settings");
   var autoRepair = document.getElementById("toggle-auto-repair-claude-settings");
+  var autoRepairWrap = document.getElementById("toggle-auto-repair-claude-settings-wrap");
   var row = document.getElementById("settings-item-auto-repair-claude-settings");
   if (!autoCheck || !autoRepair || !row) return;
   var enabled = !!autoCheck.checked;
+  if (!enabled) autoRepair.checked = false;
   autoRepair.disabled = !enabled;
+  if (autoRepairWrap) autoRepairWrap.classList.toggle("disabled", !enabled);
   row.classList.toggle("disabled", !enabled);
 }
 
 function buildRulesHTML(rules) {
   if (!rules) return '<div class="chat-empty">加载失败</div>';
   var statusPath = escapeHtml(rules.claudeSettingsPath || '~/.claude/settings.json');
-  var backupPath = escapeHtml(rules.backupPath || '~/.claude-monitor/orig-statusline.json');
+  var backupPath = escapeHtml(rules.backupPath || '~/.cc-console/orig-statusline.json');
   var statusJson = escapeHtml(rules.statusLineJson || '');
   var hooksJson = escapeHtml(rules.hooksJson || '');
   return ''
@@ -2776,11 +2876,11 @@ function buildRulesHTML(rules) {
     + '</div>'
     + '<div class="rules-section">'
     + '  <div class="rules-heading">statusLine 配置片段（可复制）</div>'
-    + '  <textarea class="modal-textarea rules-code" readonly>' + statusJson + '</textarea>'
+    + '  <pre class="rules-code">' + statusJson + '</pre>'
     + '</div>'
     + '<div class="rules-section">'
     + '  <div class="rules-heading">hooks 配置片段（可复制）</div>'
-    + '  <textarea class="modal-textarea rules-code" readonly>' + hooksJson + '</textarea>'
+    + '  <pre class="rules-code">' + hooksJson + '</pre>'
     + '</div>'
     + '<div class="rules-section">'
     + '  <div class="rules-heading">手动维护说明</div>'
@@ -2842,7 +2942,10 @@ window.saveSetting = async function(key, val) {
   var enterToSend = document.getElementById("toggle-enter-to-send").checked;
   var launchYolo = document.getElementById("toggle-launch-yolo").checked;
   var autoCheck = document.getElementById("toggle-auto-check-claude-settings").checked;
-  var autoRepair = document.getElementById("toggle-auto-repair-claude-settings").checked;
+  var autoRepairEl = document.getElementById("toggle-auto-repair-claude-settings");
+  if (key === "autoCheckClaudeSettings" && !autoCheck && autoRepairEl) autoRepairEl.checked = false;
+  updateClaudeSettingsToggleState();
+  var autoRepair = autoRepairEl ? autoRepairEl.checked : false;
   try {
     await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart, launchMode, enterToSend, launchYolo, autoCheck, autoRepair);
     autoCheckClaudeSettings = !!autoCheck;
@@ -2892,7 +2995,7 @@ window.hideClaudeSettingsRules = function() {
 
 window.openSettingsGithub = async function() {
   try {
-    await Call.ByID(ID_OPEN_URL, "https://github.com/pie-tk/claude-code-monitor");
+    await Call.ByID(ID_OPEN_URL, "https://github.com/pie-tk/cc-console");
   } catch (e) {
     flashFoot("打开失败: " + (e && e.message ? e.message : e));
   }

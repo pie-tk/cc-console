@@ -365,13 +365,9 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 /* ---- 对话历史区域 ---- */
 .card-history {
   margin-top: 4px;
-  max-height: 200px;
-  overflow-y: auto;
   border: 1px solid var(--divider);
   border-radius: 6px;
   background: var(--panel-bg);
-  scrollbar-width: thin;
-  scrollbar-color: var(--card-border) transparent;
 }
 
 .card-history-empty {
@@ -423,7 +419,9 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   font-size: 9pt;
   color: var(--secondary-text);
   line-height: 1.4;
-  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-r {
@@ -433,19 +431,9 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   margin-top: 3px;
   padding-left: 8px;
   border-left: 2px solid var(--accent-soft);
-  word-break: break-word;
-}
-
-/* Webkit 滚动条 */
-.card-history::-webkit-scrollbar {
-  width: 5px;
-}
-.card-history::-webkit-scrollbar-track {
-  background: transparent;
-}
-.card-history::-webkit-scrollbar-thumb {
-  background: var(--card-border);
-  border-radius: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-context {
@@ -873,10 +861,13 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .settings-item.disabled .settings-desc {
   color: var(--subtle-text);
 }
-.settings-item.disabled .toggle {
+.settings-item.disabled .toggle,
+.toggle.disabled {
   cursor: not-allowed;
+  pointer-events: none;
 }
-.settings-item.disabled .toggle-track {
+.settings-item.disabled .toggle-track,
+.toggle.disabled .toggle-track {
   background: var(--divider);
 }
 .settings-inline-help {
@@ -895,13 +886,22 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .settings-text-btn:hover {
   text-decoration: underline;
 }
+#claude-settings-rules-overlay {
+  z-index: 1200;
+}
 .rules-dialog {
   width: 720px;
   max-height: 80vh;
+  position: relative;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
 }
 .rules-content {
   padding: 0 20px 18px;
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 .rules-section {
   margin-top: 14px;
@@ -922,11 +922,22 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   white-space: pre-wrap;
 }
 .rules-code {
-  width: 100%;
-  min-height: 110px;
   margin-top: 8px;
-  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--window-text);
+  font-family: ui-monospace, "SF Mono", Consolas, "Cascadia Mono", monospace;
+  font-size: 9pt;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
+
+/* ===== About Section ===== */
+.about-content {
   text-align: center;
   padding: 12px 0;
 }
@@ -1260,10 +1271,25 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 /* Input area */
 .chat-input-area {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 12px 20px;
   border-top: 1px solid var(--divider);
+  flex-shrink: 0;
+}
+/* 左列：输入框 + 提示文案纵向堆叠 */
+.chat-input-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 右列：发送 / 回溯 / 窗口 纵向堆叠，与发送按钮同宽对齐 */
+.chat-input-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -1329,14 +1355,7 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .chat-send-btn:hover { opacity: 0.9; }
 .chat-send-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* 输入区下方的工具栏：左侧提示文案 + 右侧回溯按钮 */
-.chat-input-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 20px 10px;
-  flex-shrink: 0;
-}
+/* 输入框下方提示文案（原工具栏左列，现并入 chat-input-main） */
 .chat-hint {
   font-size: 8.5pt;
   color: var(--secondary-text);
@@ -1414,7 +1433,11 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   50% { opacity: 0.45; }
 }
 /* 完成态：停止旋转/渐隐，改用成功色 */
-.chat-processing.completed { color: var(--success); border-top-color: var(--success); }
+.chat-processing.completed {
+  color: var(--success);
+  border-top-color: var(--success);
+  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
+}
 .chat-processing.completed .chat-processing-spin { animation: none; opacity: 0.7; }
 .chat-processing.completed .chat-processing-text { animation: none; }
 
@@ -1603,39 +1626,6 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   flex-shrink: 0;
 }
 .ask-custom-cancel:hover { opacity: 0.7; }
-
-/* 调试键栏(临时,摸清 claude 选择 UI 响应后删除) */
-.chat-debug-keys {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 20px;
-  border-top: 1px dashed var(--divider);
-  flex-shrink: 0;
-}
-.debug-keys-label {
-  font-size: 8.5pt;
-  color: var(--subtle-text);
-  margin-right: 4px;
-}
-.debug-key-btn {
-  padding: 3px 10px;
-  font-size: 9pt;
-  font-family: inherit;
-  border: 1px solid var(--card-border);
-  border-radius: 6px;
-  background: var(--card-bg);
-  color: var(--window-text);
-  cursor: pointer;
-  transition: all 0.15s;
-  min-width: 28px;
-}
-.debug-key-btn:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-}
 
 /* Interactive assistant message: highlight that agent is asking */
 .chat-msg-interactive {

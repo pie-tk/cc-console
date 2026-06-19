@@ -19,6 +19,7 @@ type Instance struct {
 	ContextPercent  int     `json:"contextPercent"`  // 上下文占用百分比（statusline 原生 used_percentage）
 	CostUsd         float64 `json:"costUsd"`         // 会话累计费用 USD（statusline cost）
 	DurationMs      int64   `json:"durationMs"`      // 会话时长 ms（statusline cost）
+	TaskStartedAt   int64   `json:"taskStartedAt"`   // 当前任务真实开始时刻（hook 首次进入 busy 的 epoch 毫秒）
 	BridgeConnected bool    `json:"bridgeConnected"` // statusline 桥接是否对该实例生效
 	Live            bool   `json:"live"`            // 是否有新鲜的 live 数据（实时反映）
 	GitBranch       string `json:"gitBranch"`       // 当前项目 git 分支（无仓库为空）
@@ -51,7 +52,8 @@ type ChatMessage struct {
 	Tool    string `json:"tool,omitempty"`   // 工具名（tool_use / tool_result 时）
 	ToolID  string `json:"toolId,omitempty"` // tool_use_id（用于配对）
 	Turn    int    `json:"turn"`             // 轮次号（1-based），tool_result 与前一 user 同轮次
-	EditStartLine int `json:"editStartLine,omitempty"` // Edit 工具修改区域起始行号（1-based，0 表示未知）
+	EditStartLine int   `json:"editStartLine,omitempty"` // Edit 工具修改区域起始行号（1-based，0 表示未知）
+	Ts           int64 `json:"ts,omitempty"` // 该消息落盘时刻（epoch 毫秒，取自 JSONL 顶层 timestamp）
 }
 
 // ChatHistoryResult 是 GetChatHistory 的返回结构。

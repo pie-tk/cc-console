@@ -1,21 +1,21 @@
-; Inno Setup script for Claude Code Monitor
+; Inno Setup script for CC Console
 ; Build: iscc /DMyAppVersion=1.3.2 setup.iss
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
 #endif
-#define MyAppName "Claude Code 监控"
-#define MyAppId "claude-code-monitor"
-#define MyAppExe "claude-monitor.exe"
+#define MyAppName "CC Console"
+#define MyAppId "cc-console"
+#define MyAppExe "cc-console.exe"
 
 [Setup]
 AppId={{F1A2B3C4-D5E6-7890-ABCD-EF1234567890}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-DefaultDirName={localappdata}\claude-code-monitor
+DefaultDirName={localappdata}\cc-console
 DefaultGroupName={#MyAppName}
 OutputDir=.
-OutputBaseFilename=claude-monitor-setup
+OutputBaseFilename=cc-console-setup
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#MyAppExe}
 CloseApplications=yes
@@ -49,8 +49,8 @@ en.LaunchApp=Launch {#MyAppName}
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Shortcuts}"
 
 [Files]
-Source: "claude-monitor.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "claude-monitor-sl.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "cc-console.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "cc-console-sl.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 Source: "bridge.mjs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -64,7 +64,7 @@ var
 begin
   Result := '';
 
-  // 尝试优雅关闭（WM_CLOSE）— 但 claude-monitor 隐藏到托盘，不退出
+  // 尝试优雅关闭（WM_CLOSE）— 但 cc-console 隐藏到托盘，不退出
   Exec('taskkill', '/im ' + ExpandConstant('{#MyAppExe}'), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   // 强制终止残留进程

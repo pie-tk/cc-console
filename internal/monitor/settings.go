@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Settings 持久化到 ~/.claude-monitor.json 的应用设置。
+// Settings 持久化到 ~/.cc-console.json 的应用设置。
 type Settings struct {
 	ModelLimits              map[string]int64 `json:"modelLimits"`
 	CloseQuits               bool             `json:"closeQuits"`
@@ -36,7 +36,7 @@ func configPath() (string, error) {
 	if err != nil || home == "" {
 		return "", err
 	}
-	return filepath.Join(home, ".claude-monitor.json"), nil
+	return filepath.Join(home, ".cc-console.json"), nil
 }
 
 // LoadSettings 从磁盘加载设置，首次运行返回默认值。
@@ -64,7 +64,7 @@ func LoadSettings() error {
 	return nil
 }
 
-// writeSettingsToDisk 把设置序列化写回 ~/.claude-monitor.json。
+// writeSettingsToDisk 把设置序列化写回 ~/.cc-console.json。
 func writeSettingsToDisk(s Settings) error {
 	path, err := configPath()
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ---- 对话 JSONL 解析：model / context / output tokens / topic ----
@@ -391,6 +392,7 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 		switch {
 		case bytes.Contains(line, []byte(`"type":"assistant"`)):
 			var al struct {
+				Timestamp string `json:"timestamp"`
 				Message struct {
 					Content []struct {
 						Type  string          `json:"type"`
@@ -402,11 +404,12 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 				} `json:"message"`
 			}
 			if json.Unmarshal(line, &al) == nil {
+				ts := parseTsMillis(al.Timestamp)
 				for _, b := range al.Message.Content {
 					switch b.Type {
 					case "text":
 						if b.Text != "" {
-							msgs = append(msgs, ChatMessage{Role: "assistant", Content: b.Text, Turn: turn})
+							msgs = append(msgs, ChatMessage{Role: "assistant", Content: b.Text, Turn: turn, Ts: ts})
 						}
 					case "tool_use":
 						input := string(b.Input)
@@ -416,6 +419,7 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 							Tool:    b.Name,
 							ToolID:  b.ID,
 							Turn:    turn,
+							Ts:      ts,
 						}
 						// Edit 工具：读文件定位修改区域起始行号，供前端 diff 显示真实行号
 						if b.Name == "Edit" {
@@ -428,6 +432,7 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 
 		case bytes.Contains(line, []byte(`"type":"user"`)):
 			var ul struct {
+				Timestamp string `json:"timestamp"`
 				Message struct {
 					Content json.RawMessage `json:"content"`
 				} `json:"message"`
@@ -435,18 +440,20 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 			if json.Unmarshal(line, &ul) != nil {
 				continue
 			}
+			ts := parseTsMillis(ul.Timestamp)
 			blocks := parseContentBlocks(ul.Message.Content)
 			for _, b := range blocks {
 				switch {
 				case b.text != "":
 					turn++
-					msgs = append(msgs, ChatMessage{Role: "user", Content: b.text, Turn: turn})
+					msgs = append(msgs, ChatMessage{Role: "user", Content: b.text, Turn: turn, Ts: ts})
 				case b.toolUseID != "":
 					msgs = append(msgs, ChatMessage{
 						Role:    "tool_result",
 						Content: b.content,
 						ToolID:  b.toolUseID,
 						Turn:    turn,
+						Ts:      ts,
 					})
 				}
 			}
@@ -581,6 +588,30 @@ func findStartLine(filePath string, needles []string) int {
 		idx := bytes.Index(data, []byte(n))
 		if idx >= 0 {
 			return 1 + bytes.Count(data[:idx], []byte{'\n'})
+		}
+	}
+	return 0
+}
+
+// parseTsMillis 把 Claude Code JSONL 顶层 timestamp(ISO 8601，如 2025-06-19T10:30:00.123Z)
+// 解析为 epoch 毫秒。解析失败或为空返回 0。
+// 供聊天面板据此恢复任务的「完成时间 / 用时」（跨面板重开持久）。
+func parseTsMillis(iso string) int64 {
+	iso = strings.TrimSpace(iso)
+	if iso == "" {
+		return 0
+	}
+	// Claude Code 写的是带毫秒/微秒的 RFC3339；依次尝试常见格式兜底
+	layouts := []string{
+		"2006-01-02T15:04:05.999999999Z07:00",
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02T15:04:05Z",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, iso); err == nil {
+			return t.UnixMilli()
 		}
 	}
 	return 0

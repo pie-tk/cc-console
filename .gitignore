@@ -1,7 +1,7 @@
 # 编译产物
 *.exe
 *.exe~
-claude-monitor
+cc-console
 cmtest
 cmtest.exe
 
@@ -29,9 +29,13 @@ desktop.ini
 .DS_Store
 
 # minisign 签名私钥（绝不提交；公钥已嵌入代码常量）
-claude-monitor.sec
-claude-monitor.local.sec
+cc-console.sec
+cc-console.local.sec
 
 # 更新发布产物
 *.minisig
 latest.json
+
+# 临时截图与构建产物（不提交）
+tmp-*.png
+rsrc.syso

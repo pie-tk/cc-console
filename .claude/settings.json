@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "pattern": "go build.*-o\\s+claude-monitor\\.exe",
+            "pattern": "go build.*-o\\s+cc-console\\.exe",
             "command": "cd ${CLAUDE_PROJECT_DIR:-.} && VERSION=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\\(.*\\)\".*/\\1/') && powershell -Command \"& 'C:\\Users\\PIE TK\\AppData\\Local\\Programs\\Inno Setup 6\\ISCC.exe' /DMyAppVersion=$VERSION setup.iss\""
           }
         ]

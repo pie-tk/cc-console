@@ -22,4 +22,4 @@ To enumerate **running Claude Code instances and their status** on this machine:
 
 Process enumeration in pure Go (no cgo): `golang.org/x/sys/windows` `CreateToolhelp32Snapshot`/`Process32First|Next` for PID+name; `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `QueryFullProcessImageName` for path, `GetProcessTimes` for start time.
 
-Reference impl lives at `E:\test\build\monitor\` (detector.go + main.go, Walk GUI), builds to `E:\test\claude-monitor.exe`.
+Reference impl lives at `E:\test\build\monitor\` (detector.go + main.go, Walk GUI), builds to `E:\test\cc-console.exe`.

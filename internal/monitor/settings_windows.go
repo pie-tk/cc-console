@@ -11,7 +11,7 @@ import (
 
 const (
 	runKeyPath   = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runValueName = `ClaudeCodeMonitor`
+	runValueName = `CCConsole`
 )
 
 // SetAutoStart 设置/取消开机自启动。

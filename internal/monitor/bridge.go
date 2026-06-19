@@ -13,8 +13,8 @@ import (
 // statusline 桥接:利用 Claude Code 的 statusLine 通道获取活跃会话的实时数据。
 //
 // 背景:Claude Code 2.1.177+ 活跃会话不落盘 jsonl,实时 token/上下文只能通过
-// statusline 通道获取。claude-monitor-sl.exe 作为 statusLine 命令,把每次刷新推送的
-// 状态落盘到 ~/.claude-monitor/live/<pid>.json,本包负责读取这些文件并在 Detect 中
+// statusline 通道获取。cc-console-sl.exe 作为 statusLine 命令,把每次刷新推送的
+// 状态落盘到 ~/.cc-console/live/<pid>.json,本包负责读取这些文件并在 Detect 中
 // 按 pid 精确还原每个实例的实时状态。
 //
 // 本文件含跨平台逻辑(live 文件读写 + settings.json 的 statusLine 字段操作)。
@@ -49,6 +49,7 @@ type HookState struct {
 	Phase          string `json:"phase"`
 	ToolName       string `json:"toolName"`
 	ToolDepth      int    `json:"toolDepth"`
+	TaskStartedAt  int64  `json:"taskStartedAt"`
 }
 
 const (
@@ -59,28 +60,28 @@ const (
 var lifecycleHookEvents = []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
 
 const (
-	slhookExeName  = "claude-monitor-sl.exe"
+	slhookExeName  = "cc-console-sl.exe"
 	bridgeMjsName  = "bridge.mjs"
 	slhookMarker   = "bridge.mjs" // statusLine.command 含此串即表示已由我们接管(node 入口)
 	hookModeArg    = "--hook"
-	hookCommandTag = "claude-monitor-sl.exe"
+	hookCommandTag = "cc-console-sl.exe"
 )
 
 // processCmdline 返回 pid 的命令行(小写),失败返回 ""。平台特定。
 var processCmdline func(pid int) string
 
-// claudeMonitorDir 返回 ~/.claude-monitor/。
-func claudeMonitorDir() string {
+// appDataDir 返回应用数据目录 ~/.cc-console/（live/hook/logs/orig-statusline.json 等）。
+func appDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".claude-monitor")
+	return filepath.Join(home, ".cc-console")
 }
 
 // LiveDir 返回 live 文件目录。
 func LiveDir() string {
-	d := claudeMonitorDir()
+	d := appDataDir()
 	if d == "" {
 		return ""
 	}
@@ -89,7 +90,7 @@ func LiveDir() string {
 
 // HookDir 返回 lifecycle hook 状态文件目录。
 func HookDir() string {
-	d := claudeMonitorDir()
+	d := appDataDir()
 	if d == "" {
 		return ""
 	}
@@ -203,14 +204,14 @@ func claudeSettingsPath() string {
 }
 
 func origStatuslinePath() string {
-	d := claudeMonitorDir()
+	d := appDataDir()
 	if d == "" {
 		return ""
 	}
 	return filepath.Join(d, "orig-statusline.json")
 }
 
-// slhookExePath 返回监控器 exe 同目录下的 claude-monitor-sl.exe 绝对路径(不存在则空)。
+// slhookExePath 返回监控器 exe 同目录下的 cc-console-sl.exe 绝对路径(不存在则空)。
 func slhookExePath() string {
 	dir := monitorExeDir()
 	if dir == "" {

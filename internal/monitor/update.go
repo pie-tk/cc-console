@@ -20,15 +20,15 @@ type ReleaseInfo struct {
 }
 
 // minisignPublicKeyB64 是嵌入应用的 minisign 公钥（base64 编码的「两行公钥文本」）。
-// 由 `minisign -G` 生成密钥对后，把 claude-monitor.pub 的两行内容整体做一次 base64
-// 编码填入此处。私钥 claude-monitor.sec 绝不进仓库，仅本地用于发布签名。
+// 由 `minisign -G` 生成密钥对后，把 cc-console.pub 的两行内容整体做一次 base64
+// 编码填入此处。私钥 cc-console.sec 绝不进仓库，仅本地用于发布签名。
 const minisignPublicKeyB64 = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgODc2MDRFNENERkM4QzJDNg0KUldUR3dzamZURTVnaDBpczh5REo2U3kza1VId25acGxsVDVueWMyUGFxczFKemVuWm9NWThWUG4NCg=="
 
 // manifestURL 指向最新 release 的 latest.json。
 // 走 GitHub Release CDN（对象存储），不计入 REST API 速率限额（旧版调
 // api.github.com 受未认证 60次/小时 限制）。该 URL 经 "latest" 重定向，只指向
 // 非预发布 release —— 发布时务必用正式 release，否则重定向会指向更旧的正式版。
-const manifestURL = "https://github.com/pie-tk/claude-code-monitor/releases/latest/download/latest.json"
+const manifestURL = "https://github.com/pie-tk/cc-console/releases/latest/download/latest.json"
 
 // signingPublicKey 解码嵌入的 minisign 公钥，返回两行文本。
 func signingPublicKey() (string, error) {
@@ -47,7 +47,7 @@ func CheckLatestRelease() (*ReleaseInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-	req.Header.Set("User-Agent", "claude-code-monitor")
+	req.Header.Set("User-Agent", "cc-console")
 
 	resp, err := client.Do(req)
 	if err != nil {

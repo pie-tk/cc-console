@@ -23,7 +23,7 @@ type modelLimitEntry struct {
 
 // 模型上下文窗口上限表（前缀匹配，第一条命中即返回）。
 // 数据来源：各厂商官方文档（2025-2026），具体值可能随后端/版本变化，
-// 可在 ~/.claude-monitor.json 的 modelLimits 字段覆盖。
+// 可在 ~/.cc-console.json 的 modelLimits 字段覆盖。
 var builtinModelLimits = []modelLimitEntry{
 	// ---- Anthropic Claude ----
 	// 注意：4.5+ 扩展到 1M；基础 4.x 为 200K
@@ -131,7 +131,7 @@ var builtinModelLimits = []modelLimitEntry{
 //
 // 优先顺序：
 //  1. 模型字符串里显式带的上限信息（格式：<model>[<limit>]，如 "deepseek-v4-pro[1M]" / "glm-5[256k]"）
-//  2. ~/.claude-monitor.json 里的精确模型映射
+//  2. ~/.cc-console.json 里的精确模型映射
 //  3. 内置表的前缀匹配
 //  4. 默认 200000
 func ModelContextLimit(model string) int64 {
@@ -203,7 +203,7 @@ func parseLimitToken(t string) (int64, bool) {
 }
 
 // LoadConfig 读取应用设置 + 模型上限覆盖，优先级：
-//  1. ~/.claude-monitor.json 的 modelLimits（精确覆盖，同时加载 closeQuits/autoStart）
+//  1. ~/.cc-console.json 的 modelLimits（精确覆盖，同时加载 closeQuits/autoStart）
 //  2. ~/.claude/settings.json 里模型环境变量中的 [xxx] 标注
 func LoadConfig() {
 	_ = LoadSettings()

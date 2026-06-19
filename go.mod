@@ -1,4 +1,4 @@
-module claude-monitor
+module cc-console
 
 go 1.26
 

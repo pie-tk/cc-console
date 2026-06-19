@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="/style.css">
-  <title>Claude Code 监控</title>
+  <title>CC Console</title>
 </head>
 <body>
   <div id="app">
@@ -12,7 +12,7 @@
     <header id="hero">
       <div class="title-row">
         <span class="hero-emoji">📊</span>
-        <h1 class="hero-title">Claude Code 监控</h1>
+        <h1 class="hero-title">CC Console</h1>
       </div>
       <p class="subtitle">实时监控本机运行中的所有 Claude Code 实例</p>
       <div class="spacer-8"></div>
@@ -121,23 +121,15 @@
       </div>
       <div id="chat-quick-replies" class="chat-quick-replies hidden"></div>
       <div class="chat-input-area">
-        <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="4" maxlength="4000"></textarea>
-        <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
-      </div>
-      <div class="chat-input-toolbar">
-        <span id="chat-hint" class="chat-hint hidden"></span>
-        <span class="flex-spacer"></span>
-        <button id="chat-rewind-btn" class="chat-rewind-btn" onclick="handleChatRewind()" title="回溯：在终端打开历史选择器">↺ 回溯</button>
-      </div>
-      <div class="chat-debug-keys hidden" id="chat-debug-keys">
-        <span class="debug-keys-label">🔧 调试键(点击注入单键到终端):</span>
-        <button class="debug-key-btn" onclick="sendText('j')" title="文本字符 j">j</button>
-        <button class="debug-key-btn" onclick="sendText('k')" title="文本字符 k">k</button>
-        <button class="debug-key-btn" onclick="sendKey('down')" title="键盘下方向键">↓</button>
-        <button class="debug-key-btn" onclick="sendKey('up')" title="键盘上方向键">↑</button>
-        <button class="debug-key-btn" onclick="sendKey('enter')" title="回车">⏎</button>
-        <button class="debug-key-btn" onclick="sendKey('space')" title="空格">␣</button>
-        <button class="debug-key-btn" onclick="sendKey('tab')" title="Tab">Tab</button>
+        <div class="chat-input-main">
+          <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="4"></textarea>
+          <span id="chat-hint" class="chat-hint hidden"></span>
+        </div>
+        <div class="chat-input-actions">
+          <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
+          <button id="chat-rewind-btn" class="chat-rewind-btn" onclick="handleChatRewind()" title="回溯：在终端打开历史选择器">↺ 回溯</button>
+          <button id="chat-win-btn" class="chat-rewind-btn" onclick="handleChatShowWin()" title="将该实例终端窗口置前">🪟 窗口</button>
+        </div>
       </div>
       <div id="chat-stats" class="chat-stats hidden">
         <span class="chat-stat-group">
@@ -234,7 +226,7 @@
                 <span class="settings-label">自动修复 Claude settings.json</span>
                 <span class="settings-desc">检测到配置漂移后，自动恢复监控器需要的 statusLine 与 lifecycle hooks；关闭后只检测不修复</span>
               </div>
-              <label class="toggle">
+              <label class="toggle" id="toggle-auto-repair-claude-settings-wrap">
                 <input type="checkbox" id="toggle-auto-repair-claude-settings" onchange="saveSetting('autoRepairClaudeSettings', this.checked)">
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>
@@ -263,7 +255,7 @@
           <div id="settings-about" class="settings-section hidden">
             <div class="settings-title">关于</div>
             <div class="about-content">
-              <p class="about-name">Claude Code 监控</p>
+              <p class="about-name">CC Console</p>
               <p id="about-version" class="about-version">版本 --</p>
               <div id="update-area" class="update-area hidden">
                 <span id="update-checking" class="update-status">⏳ 检查更新中…</span>

@@ -28,7 +28,7 @@ func DownloadAndReplace(downloadURL, signature string, onProgress func(downloade
 	installDir := filepath.Dir(curExe)
 
 	tmpDir := os.TempDir()
-	tmpSetup := filepath.Join(tmpDir, "claude-monitor-setup.exe")
+	tmpSetup := filepath.Join(tmpDir, "cc-console-setup.exe")
 	os.Remove(tmpSetup)
 
 	transport := &http.Transport{
@@ -54,7 +54,7 @@ func DownloadAndReplace(downloadURL, signature string, onProgress func(downloade
 	if err != nil {
 		return fmt.Errorf("创建下载请求失败: %w", err)
 	}
-	req.Header.Set("User-Agent", "claude-code-monitor")
+	req.Header.Set("User-Agent", "cc-console")
 
 	resp, err := client.Do(req)
 	if err != nil {

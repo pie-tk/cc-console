@@ -88,8 +88,8 @@ const hookFreshMs int64 = 120000
 // Detect 返回当前存活的 Claude Code 实例。
 //
 // Claude Code 2.1.169 引入的 regression(Issue #66486):交互式会话不再实时落盘 jsonl,
-// 实时数据改通过 statusline 桥接获取——claude-monitor-sl.exe 把每个会话的实时状态写到
-// ~/.claude-monitor/live/<pid>.json。本函数以 claude.exe 进程为锚点枚举 pid → 读对应 live
+// 实时数据改通过 statusline 桥接获取——cc-console-sl.exe 把每个会话的实时状态写到
+// ~/.cc-console/live/<pid>.json。本函数以 claude.exe 进程为锚点枚举 pid → 读对应 live
 // 文件精确还原(model/context/busy)。无新鲜 live 文件时回退到旧的 cwd+mtime 猜测(读 jsonl,
 // 在 regression 修复或会话结束后生效),前端标注"未接入"。
 func Detect() (live []Instance, stale []Instance, err error) {
@@ -164,6 +164,7 @@ func Detect() (live []Instance, stale []Instance, err error) {
 			Cwd:            inst.Cwd,
 			StartedAt:      p.createMs,
 			Status:         inst.Status,
+			UpdatedAt:      inst.UpdatedAt,
 			TranscriptPath: inst.TranscriptPath,
 		}
 		cacheMu.Lock()
@@ -277,7 +278,7 @@ func fusedStatus(pid int, hook HookState, hasHook bool, hookMtimeMs int64, strea
 
 // hasToolChild 判定 pid 是否有"正在执行工具"的直接子进程。
 // 排除常驻进程:MCP server(命令行含 mcp/--stdio)与我们的 statusline hook(bridge.mjs/
-// claude-monitor-sl,statusline 刷新时的瞬时 node 子进程)。这些在 idle 实例上也常驻,
+// cc-console-sl,statusline 刷新时的瞬时 node 子进程)。这些在 idle 实例上也常驻,
 // 不排除会永远误判 busy。读不到命令行(权限等)保守跳过,不据此判 busy。
 func hasToolChild(pid int, children map[int][]int) bool {
 	for _, child := range children[pid] {
@@ -295,7 +296,7 @@ func isExcludedChild(cmd string) bool {
 	return strings.Contains(cmd, "mcp") ||
 		strings.Contains(cmd, "--stdio") ||
 		strings.Contains(cmd, "bridge.mjs") ||
-		strings.Contains(cmd, "claude-monitor-sl")
+		strings.Contains(cmd, "cc-console-sl")
 }
 
 // buildInstanceFromLive 用 statusline 桥接的实时数据构建实例(live 文件新鲜)。
@@ -336,6 +337,9 @@ func buildInstanceFromLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int64) I
 	}
 	inst.CostUsd = rec.CostUsd
 	inst.DurationMs = rec.DurationMs
+	if hs, _, ok := ReadHookState(p.pid); ok {
+		inst.TaskStartedAt = hs.TaskStartedAt
+	}
 	// 有 live 实时数据时,即使 jsonl 尚未落盘也视为有会话,让前端显示 model/context
 	if rec.ContextTokens > 0 || rec.Model != "" {
 		inst.HasConversation = true

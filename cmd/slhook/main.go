@@ -1,4 +1,4 @@
-// Package main: claude-monitor-sl 是 statusline 桥接的 helper。
+// Package main: cc-console-sl 是 statusline 桥接的 helper。
 //
 // Claude Code 2.1.177+ 活跃会话不落盘 jsonl,实时 token/上下文只能通过
 // statusline 通道获取。但 Claude Code 2.1.x 只执行 `node "mjs"` 形式的 statusLine,
@@ -84,6 +84,7 @@ type hookState struct {
 	Phase          string `json:"phase"`
 	ToolName       string `json:"toolName"`
 	ToolDepth      int    `json:"toolDepth"`
+	TaskStartedAt  int64  `json:"taskStartedAt"`
 }
 
 func main() {
@@ -204,9 +205,10 @@ func writeHookState(pid int, s *hookStdin) {
 		return
 	}
 	prev, _ := readPrevHook(pid)
+	nowMs := time.Now().UnixMilli()
 	rec := hookState{
 		Pid:            pid,
-		Ts:             time.Now().UnixMilli(),
+		Ts:             nowMs,
 		SessionID:      firstNonEmpty(s.SessionID, prev.SessionID),
 		TranscriptPath: firstNonEmpty(s.TranscriptPath, prev.TranscriptPath),
 		Cwd:            firstNonEmpty(s.Cwd, prev.Cwd),
@@ -214,16 +216,22 @@ func writeHookState(pid int, s *hookStdin) {
 		Phase:          prev.Phase,
 		ToolName:       prev.ToolName,
 		ToolDepth:      prev.ToolDepth,
+		TaskStartedAt:  prev.TaskStartedAt,
 	}
 	tool := firstNonEmpty(s.ToolName, prev.ToolName)
 	switch strings.TrimSpace(s.HookEventName) {
 	case "UserPromptSubmit":
 		rec.Phase = "busy"
 		rec.ToolName = ""
+		rec.ToolDepth = 0
+		rec.TaskStartedAt = nowMs
 	case "PreToolUse":
 		rec.Phase = "busy"
 		rec.ToolDepth++
 		rec.ToolName = tool
+		if prev.Phase != "busy" || prev.TaskStartedAt == 0 {
+			rec.TaskStartedAt = nowMs
+		}
 	case "PostToolUse":
 		if rec.ToolDepth > 0 {
 			rec.ToolDepth--
@@ -234,6 +242,9 @@ func writeHookState(pid int, s *hookStdin) {
 		} else {
 			rec.ToolName = tool
 		}
+		if rec.TaskStartedAt == 0 {
+			rec.TaskStartedAt = nowMs
+		}
 	case "Stop":
 		rec.Phase = "idle"
 		rec.ToolDepth = 0
@@ -243,9 +254,15 @@ func writeHookState(pid int, s *hookStdin) {
 			rec.Phase = "busy"
 		}
 		rec.ToolName = tool
+		if rec.Phase == "busy" && rec.TaskStartedAt == 0 {
+			rec.TaskStartedAt = nowMs
+		}
 	}
 	if rec.Phase == "" {
 		rec.Phase = "busy"
+	}
+	if rec.Phase == "idle" {
+		rec.TaskStartedAt = 0
 	}
 	writeJSON(filepath.Join(dir, strconv.Itoa(pid)+".json"), rec)
 }
@@ -289,13 +306,13 @@ func firstNonEmpty(v string, fallback string) string {
 	return fallback
 }
 
-// liveDir 返回 ~/.claude-monitor/live/。
+// liveDir 返回 ~/.cc-console/live/。
 func liveDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".claude-monitor", "live")
+	return filepath.Join(home, ".cc-console", "live")
 }
 
 func hookDir() string {
@@ -303,5 +320,5 @@ func hookDir() string {
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".claude-monitor", "hook")
+	return filepath.Join(home, ".cc-console", "hook")
 }
