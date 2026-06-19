@@ -19,7 +19,7 @@ type Instance struct {
 	ContextPercent  int     `json:"contextPercent"`  // 上下文占用百分比（statusline 原生 used_percentage）
 	CostUsd         float64 `json:"costUsd"`         // 会话累计费用 USD（statusline cost）
 	DurationMs      int64   `json:"durationMs"`      // 会话时长 ms（statusline cost）
-	TaskStartedAt   int64   `json:"taskStartedAt"`   // 当前任务真实开始时刻（hook 首次进入 busy 的 epoch 毫秒）
+	TaskStartedAt   int64   `json:"taskStartedAt"`   // 当前任务开始时刻（首次进入 busy 起，直到下次 UserPromptSubmit 才重置；中途 Stop 不清零）
 	BridgeConnected bool    `json:"bridgeConnected"` // statusline 桥接是否对该实例生效
 	Live            bool   `json:"live"`            // 是否有新鲜的 live 数据（实时反映）
 	GitBranch       string `json:"gitBranch"`       // 当前项目 git 分支（无仓库为空）

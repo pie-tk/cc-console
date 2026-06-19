@@ -229,7 +229,9 @@ func writeHookState(pid int, s *hookStdin) {
 		rec.Phase = "busy"
 		rec.ToolDepth++
 		rec.ToolName = tool
-		if prev.Phase != "busy" || prev.TaskStartedAt == 0 {
+		// 仅当尚未记录任务起点时才设；中途 Stop→重入 busy 不重置。保证一个任务
+		// （最近一次 UserPromptSubmit 起）的 taskStartedAt 稳定不变，前端计时锚点不抖动。
+		if rec.TaskStartedAt == 0 {
 			rec.TaskStartedAt = nowMs
 		}
 	case "PostToolUse":
@@ -261,9 +263,9 @@ func writeHookState(pid int, s *hookStdin) {
 	if rec.Phase == "" {
 		rec.Phase = "busy"
 	}
-	if rec.Phase == "idle" {
-		rec.TaskStartedAt = 0
-	}
+	// 注意：Stop（idle）不在此清零 taskStartedAt。Claude Code 长任务中途会阶段性触发
+	// Stop（一轮无 pending 工具的回复结束）随即继续，若清零会让前端计时锚点丢失、重入
+	// busy 时从 0 重跳。taskStartedAt 的真正重置交给 UserPromptSubmit（新提问=新任务）。
 	writeJSON(filepath.Join(dir, strconv.Itoa(pid)+".json"), rec)
 }
 

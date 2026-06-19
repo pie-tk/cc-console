@@ -47,6 +47,12 @@ let procOptimistic = false;    // 发送后乐观窗口（status 变 busy 前的
 let procCompletionText = '';   // 完成态文案（含最终用时）
 let procTaskStartTime = 0;     // 后端上报的真实任务开始时刻(ms)
 let procCompletedTurnEnd = 0;  // 当前已展示为「完成」的轮次结束时刻(ms)，用于跨面板重开判定是否需重算
+let procIdleSince = 0;        // 首次观测到 status=idle 的时刻(ms)，用于 idle 滞回（见 procUpdate）
+// idle 滞回窗口：Claude Code 长任务中途会阶段性触发 Stop hook（一轮无 pending 工具的回复
+// 结束即触发）随即继续，表现为 busy→idle→busy 抖动。要求 idle 连续稳定该时长才判定完成，
+// 避免瞬时空窗误显示「已完成」并让计时从 0 重跳。取值需大于典型中途空窗（1~2s）、小于
+// 用户能容忍的「真完成延迟」。
+const IDLE_SETTLE_MS = 3000;
 let verbSwitchTimer = null;    // 处理中动词切换定时器
 let optimisticTimer = null;    // 乐观窗口兜底定时器
 
@@ -573,6 +579,41 @@ function cwdTitle(cwd) {
   return '\\' + parts.slice(-2).join('\\');
 }
 
+// ctxProgressHTML 返回 context 胶囊进度条的初始 HTML（卡片首帧直接渲染胶囊，避免字符条→胶囊闪烁）。
+// 无 context 数据时回退为文本（"（新会话）" / "—" / 纯数值）。
+function ctxProgressHTML(inst) {
+  var cls = contextBarClass(inst);
+  var hasCtx = inst.hasConversation && inst.contextTokens > 0 && inst.contextLimit > 0;
+  if (!hasCtx) {
+    return '<span class="context-bar" data-field="ctxBar">' + escHtml(contextBar(inst)) + '</span>';
+  }
+  var pctVal = Math.min(100, Math.round(inst.contextTokens * 100 / inst.contextLimit));
+  return '<span class="ctx-progress' + (cls ? " " + cls : "") + '" data-field="ctxBar">'
+    + '<span class="ctx-progress-track"><span class="ctx-progress-fill" style="width:' + pctVal + '%"></span></span>'
+    + '</span>';
+}
+
+// renderCtxProgress 就地更新胶囊进度条：仅改填充宽度（保留 transition 平滑动画）+ 配色按用量分档；
+// 无数据时回退文本。卡片与聊天面板共用。
+function renderCtxProgress(el, inst) {
+  if (!el) return;
+  var cls = contextBarClass(inst);
+  var hasCtx = inst.hasConversation && inst.contextTokens > 0 && inst.contextLimit > 0;
+  if (!hasCtx) {
+    el.className = "context-bar";
+    el.textContent = contextBar(inst);
+    return;
+  }
+  var pctVal = Math.min(100, Math.round(inst.contextTokens * 100 / inst.contextLimit));
+  var fill = el.querySelector(".ctx-progress-fill");
+  if (!fill) {
+    el.innerHTML = '<span class="ctx-progress-track"><span class="ctx-progress-fill"></span></span>';
+    fill = el.querySelector(".ctx-progress-fill");
+  }
+  el.className = "ctx-progress" + (cls ? " " + cls : "");
+  if (fill) fill.style.width = pctVal + "%";
+}
+
 function cardHTML(inst) {
   const stale = inst._stale ? " stale" : "";
   const emoji = statusEmoji(inst.status);
@@ -582,7 +623,6 @@ function cardHTML(inst) {
   const cwd = inst.cwd || "";
   const title = cwdTitle(cwd);
   const topic = topicDisplay(inst);
-  const ctxBar = contextBar(inst);
   const ctxDetail = contextDetail(inst);
   const output = outputDisplay(inst);
   const totalTokens = totalTokensDisplay(inst);
@@ -604,9 +644,10 @@ function cardHTML(inst) {
     + '</div>'
     + historyHTML(inst)
     + '<div class="card-row card-context">'
-    + '<span class="context-bar ' + contextBarClass(inst) + '" data-field="ctxBar">' + ctxBar + '</span>'
-    + '<span class="context-pct" data-field="ctxPct">' + contextPct(inst) + '</span>'
-    + '<span class="context-detail" data-field="ctxDetail">' + ctxDetail + '</span>'
+    + '<span class="card-context-label">Context</span>'
+    + ctxProgressHTML(inst)
+    + '<span class="context-pct ' + contextBarClass(inst) + '" data-field="ctxPct">' + contextPct(inst) + '</span>'
+    + '<span class="context-detail ' + contextBarClass(inst) + '" data-field="ctxDetail">' + ctxDetail + '</span>'
     + '<span class="card-output" data-field="output">↑ ' + output + '</span>'
     + '</div>'
     + (totalTokens ? '<div class="card-row card-tokens"><span class="card-total-tokens" data-field="totalTokens">📦 ' + totalTokens + '</span></div>' : '')
@@ -614,7 +655,6 @@ function cardHTML(inst) {
     + '<div class="card-actions">'
     + '<button class="action-btn" onclick="handleClear(' + inst.pid + ')">清空</button>'
     + '<button class="action-btn" onclick="openChatPanel(' + inst.pid + ')">对话</button>'
-    + '<button class="action-btn" onclick="handleRewind(' + inst.pid + ')">回溯</button>'
     + '<button class="action-btn" onclick="handleShowWin(' + inst.pid + ')">窗口</button>'
     + '</div>'
     + '</div>';
@@ -629,9 +669,12 @@ function updateCardText(el, inst) {
   set("[data-field=model]", modelDisplay(inst));
   set("[data-field=duration]", humanDuration(inst.startedAt));
   set("[data-field=topic]", "📁 " + cwdTitle(inst.cwd || ""));
-  set("[data-field=ctxBar]", contextBar(inst));
-  set("[data-field=ctxPct]", contextPct(inst));
-  set("[data-field=ctxDetail]", contextDetail(inst));
+  renderCtxProgress(el.querySelector("[data-field=ctxBar]"), inst);
+  var ctxCls = contextBarClass(inst);
+  var pctEl = el.querySelector("[data-field=ctxPct]");
+  if (pctEl) { pctEl.textContent = contextPct(inst); pctEl.className = "context-pct " + ctxCls; }
+  var detailEl = el.querySelector("[data-field=ctxDetail]");
+  if (detailEl) { detailEl.textContent = contextDetail(inst); detailEl.className = "context-detail " + ctxCls; }
   set("[data-field=output]", "↑ " + outputDisplay(inst));
   // 对话历史区域：比较 historyHash 而非 turns——assistant 回复追加到已有轮次时
   // turns 不变，但 historyHash（= Σ(len(Q)*31 + len(R)*17)）一定会变。
@@ -684,8 +727,6 @@ function updateCardText(el, inst) {
   if (topicEl) topicEl.title = inst.cwd || "";
   var statusEl = el.querySelector(".card-status");
   if (statusEl) statusEl.className = "card-status " + (inst.status || "unknown");
-  var barEl = el.querySelector(".context-bar");
-  if (barEl) barEl.className = "context-bar " + contextBarClass(inst);
   set(".card-emoji", statusEmoji(inst.status));
   var bridgeEl = el.querySelector("[data-field=bridge]");
   if (bridgeEl) bridgeEl.classList.toggle("show", !inst.bridgeConnected);
@@ -1367,15 +1408,6 @@ window.handleClear = async function(pid) {
   }
 };
 
-window.handleRewind = async function(pid) {
-  try {
-    await Call.ByID(ID_ACT_REWIND, pid);
-    flashFoot("↺  已向 PID " + pid + " 发送 ESC×2（回溯）");
-  } catch (e) {
-    alert("回溯失败: " + (e && e.message ? e.message : e));
-  }
-};
-
 window.handlePrompt = function(pid) {
   promptTargetPid = pid;
   loadSlashSuggestions(pid); // 预载斜杠命令/技能供消息框补全
@@ -1568,6 +1600,7 @@ function procReset() {
   procHasBeenBusy = false;
   procTaskStartTime = 0;
   procCompletedTurnEnd = 0;
+  procIdleSince = 0;
   procRender();
 }
 
@@ -1591,9 +1624,15 @@ function procRender() {
   el.classList.toggle('completed', procState === 'completed');
   var textEl = el.querySelector('.chat-processing-text');
   if (procState === 'processing') {
-    var startAt = procTaskStartTime || procStartTime || Date.now();
-    var dur = procFormatDuration(Date.now() - startAt);
-    if (textEl) textEl.textContent = SPINNER_VERBS[procVerbIdx].ing + '… · ' + dur;
+    if (procTaskStartTime > 0) {
+      // 有后端上报的真实任务起点（lifecycle hook 的 taskStartedAt），显示真实计时
+      var dur = procFormatDuration(Date.now() - procTaskStartTime);
+      if (textEl) textEl.textContent = SPINNER_VERBS[procVerbIdx].ing + '… · ' + dur;
+    } else {
+      // 真实起点未知（应用启动初期 hook 通道未就绪、taskStartedAt=0），不假装从「现在」
+      // 起计时，只显示处理中动效，等锚点到位再显示真实用时——避免「从头计时」的误导。
+      if (textEl) textEl.textContent = SPINNER_VERBS[procVerbIdx].ing + '…';
+    }
   } else {
     if (textEl) textEl.textContent = procCompletionText;
   }
@@ -1626,13 +1665,27 @@ function procUpdate() {
     // 空会话（无消息内容）不因 busy 误显示；乐观窗口（用户刚发送）允许显示
     if (!hasChatContent() && !procOptimistic) { procReset(); return; }
     procHasBeenBusy = true;
+    procIdleSince = 0; // busy 回来，取消未决的 idle 滞回
     procCompletedTurnEnd = 0; // 新任务开始，作废已展示的完成轮次
     if (procState !== 'processing') startProcessing(procTaskStartTime || Date.now());
     else procRender();
     return;
   }
 
-  // idle
+  // idle：统一 idle 滞回守卫。所有「判定为完成」的路径（实时完成 completeProcessing、
+  // 面板打开看历史 showCompletedFromTurn）都要求 status=idle 连续稳定 IDLE_SETTLE_MS，
+  // 覆盖两类假完成：①任务中途 Stop 抖动（busy→idle→busy）；②应用启动初期 Detect 未稳定
+  // 时 status 暂判 idle（历史 turn 会误显示「上次任务完成」）。Detect 在窗口内收敛为 busy
+  // 则清滞回显示处理中，持续 idle 才判定完成。
+  if (!procIdleSince) procIdleSince = Date.now();
+  if (Date.now() - procIdleSince < IDLE_SETTLE_MS) {
+    // 滞回窗口内不翻转完成：processing 态保持动效（计时继续跳）；idle/completed 暂不渲染。
+    if (procState === 'processing') procRender();
+    return;
+  }
+  procIdleSince = 0;
+
+  // idle 已稳定 → 判定完成
   if (procState === 'processing') {
     if (procHasBeenBusy) {
       // 实时完成：刚从 busy 转入 idle（turn 可能因 JSONL 滞后为 null，兜底用 Date.now）
@@ -1671,16 +1724,13 @@ function renderChatStats(pid) {
   if (!inst) { statsEl.classList.add("hidden"); return; } // 实例数据未就绪/已退出
   statsEl.classList.remove("hidden");
 
-  // context：进度条（按用量配色）+ 百分比 + 明细，与卡片 context 行一致
-  var barEl = document.getElementById("chat-ctx-bar");
-  if (barEl) {
-    barEl.className = "context-bar " + contextBarClass(inst);
-    barEl.textContent = contextBar(inst);
-  }
+  // context：胶囊进度条（按用量配色）+ 百分比 + 明细；百分比/明细与进度条同色
+  var ctxCls = contextBarClass(inst);
+  renderCtxProgress(document.getElementById("chat-ctx-bar"), inst);
   var pctEl = document.getElementById("chat-ctx-pct");
-  if (pctEl) pctEl.textContent = contextPct(inst);
+  if (pctEl) { pctEl.textContent = contextPct(inst); pctEl.className = "context-pct " + ctxCls; }
   var detailEl = document.getElementById("chat-ctx-detail");
-  if (detailEl) detailEl.textContent = contextDetail(inst);
+  if (detailEl) { detailEl.textContent = contextDetail(inst); detailEl.className = "context-detail " + ctxCls; }
 
   // tokens：累计 token 总量及 in/out/cache 明细（无累计数据时回退费用/时长，再无则 —）
   var tokensEl = document.getElementById("chat-tokens");

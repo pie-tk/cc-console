@@ -443,6 +443,11 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 10pt;
 }
+.card-context-label {
+  font-size: 9pt;
+  color: var(--subtle-text);
+  flex-shrink: 0;
+}
 
 .context-bar {
   color: var(--context-low);
@@ -453,12 +458,17 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 
 .context-pct {
   font-size: 9pt;
-  color: var(--secondary-text);
+  font-weight: 500;
+  color: var(--context-low);
 }
+.context-pct.mid { color: var(--context-mid); }
+.context-pct.high { color: var(--context-high); }
 .context-detail {
   font-size: 9pt;
-  color: var(--subtle-text);
+  color: var(--context-low);
 }
+.context-detail.mid { color: var(--context-mid); }
+.context-detail.high { color: var(--context-high); }
 
 .card-output {
   font-size: 9pt;
@@ -477,19 +487,26 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 }
 
 /* ===== Action Buttons ===== */
+/* 右侧功能区域：固定宽度，三个按钮纵向三等分、填满整个卡片高度 */
 .card-actions {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 10px 10px;
   border-left: 1px solid var(--divider);
   background: var(--panel-bg);
+  width: 84px;
+  flex-shrink: 0;
 }
 
 .action-btn {
-  padding: 5px 12px;
-  font-size: 9pt;
+  flex: 1 1 0;            /* 三等分填满卡片高度 */
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  font-size: 11pt;        /* 字体调大 */
   border: 1px solid var(--card-border);
   border-radius: 4px;
   background: var(--card-bg);
@@ -1062,9 +1079,9 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   background: var(--window-bg);
   border-radius: 10px;
   width: 90vw;
-  max-width: 1100px;
+  max-width: 1500px;
   height: 88vh;
-  max-height: 900px;
+  max-height: 1100px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.2);
   display: flex;
   flex-direction: column;
@@ -1319,7 +1336,7 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   padding: 4px 20px 10px;
   flex-shrink: 0;
   font-family: "Cascadia Code", "Consolas", monospace;
-  font-size: 9pt;
+  font-size: 11pt;
 }
 .chat-stat-group {
   display: flex;
@@ -1328,7 +1345,7 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   min-width: 0;
 }
 .chat-stat-label {
-  font-size: 8.5pt;
+  font-size: 11pt;
   color: var(--subtle-text);
   flex-shrink: 0;
 }
@@ -1338,6 +1355,48 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* 聊天面板：context 百分比/明细与进度条同色（按用量分档），并放大字号 */
+.chat-stats .context-pct {
+  font-size: 11pt;
+  font-weight: 600;
+  color: var(--context-low);
+}
+.chat-stats .context-pct.mid { color: var(--context-mid); }
+.chat-stats .context-pct.high { color: var(--context-high); }
+.chat-stats .context-detail {
+  font-size: 11pt;
+  color: var(--context-low);
+}
+.chat-stats .context-detail.mid { color: var(--context-mid); }
+.chat-stats .context-detail.high { color: var(--context-high); }
+
+/* 聊天面板 context 胶囊进度条（替代字符条，更美观） */
+.ctx-progress {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.ctx-progress-track {
+  display: block;
+  width: 150px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--divider);
+  overflow: hidden;
+}
+.ctx-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--context-low);
+  transition: width 0.4s ease, background 0.4s ease;
+}
+.ctx-progress.mid .ctx-progress-fill { background: var(--context-mid); }
+.ctx-progress.high .ctx-progress-fill { background: var(--context-high); }
+
+/* 卡片 context 行的胶囊进度条更紧凑（腾出空间给 Context 标签；聊天面板沿用上方 150px 默认宽度） */
+.card-context .ctx-progress-track { width: 84px; height: 7px; }
 
 .chat-send-btn {
   padding: 8px 16px;

@@ -45,7 +45,18 @@ cp cmd/slhook/bridge.mjs bridge.mjs
 echo ""
 echo "=== 5/7 生成 Inno Setup 安装包 ==="
 echo "Version: $VERSION"
-powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=$VERSION setup.iss"
+# 自动发现 ISCC：优先系统级安装，回退到用户级安装
+ISCC_EXE=""
+for cand in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "$(cygpath -u "${LOCALAPPDATA:-}" 2>/dev/null)/Programs/Inno Setup 6/ISCC.exe"; do
+  if [ -f "$cand" ]; then ISCC_EXE="$cand"; break; fi
+done
+if [ -z "$ISCC_EXE" ]; then
+  echo "未找到 ISCC.exe（Inno Setup 6），请先安装" >&2
+  exit 1
+fi
+echo "ISCC: $ISCC_EXE"
+powershell -Command "& '$(cygpath -w "$ISCC_EXE")' /DMyAppVersion=$VERSION setup.iss"
 
 echo ""
 echo "=== 6/7 处理更新发布元数据 ==="
