@@ -187,9 +187,10 @@ func Detect() (live []Instance, stale []Instance, err error) {
 		return live[i].Pid < live[j].Pid
 	})
 
-	// 清理已退出进程残留的 live / hook 文件
+	// 清理已退出进程残留的 live / hook / ask 文件
 	CleanLiveFiles(alivePids)
 	CleanHookFiles(alivePids)
+	CleanAskFiles(alivePids)
 	// 清理已退出进程的 busy 滞回残留
 	cacheMu.Lock()
 	for pid := range lastBusyAt {

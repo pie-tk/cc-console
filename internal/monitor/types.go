@@ -58,8 +58,9 @@ type ChatMessage struct {
 
 // ChatHistoryResult 是 GetChatHistory 的返回结构。
 type ChatHistoryResult struct {
-	Messages []ChatMessage `json:"messages"`
-	Hash     int           `json:"hash"` // 前端用于增量更新判断
+	Messages   []ChatMessage `json:"messages"`
+	Hash       int           `json:"hash"` // 前端用于增量更新判断
+	PendingAsk *AskRecord    `json:"pendingAsk,omitempty"` // 活跃会话挂起的 AskUserQuestion（JSONL 未落盘时的实时旁路，由 service 层填）
 }
 
 // StatsInfo 统计信息，供前端使用。

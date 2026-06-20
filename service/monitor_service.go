@@ -133,6 +133,11 @@ func (s *MonitorService) GetChatHistory(pid int) (*monitor.ChatHistoryResult, er
 		return nil, fmt.Errorf("未找到 PID %d 的会话（实例可能已退出）", pid)
 	}
 	result := monitor.GetChatHistory(si)
+	// PendingAsk 实时读 ask/<pid>.json，绝不进 GetChatHistory 的 mtime 缓存——
+	// ask 文件从有→无（用户答完）必须即时反映，而 JSONL 的 hash 未变时缓存会直接 return。
+	if rec, ok := monitor.ReadAsk(si.Pid); ok {
+		result.PendingAsk = &rec
+	}
 	return &result, nil
 }
 
@@ -261,7 +266,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.4.1"
+const Version = "1.4.2"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {

@@ -48,11 +48,13 @@ type statuslineStdin struct {
 }
 
 type hookStdin struct {
-	HookEventName  string `json:"hook_event_name"`
-	SessionID      string `json:"session_id"`
-	TranscriptPath string `json:"transcript_path"`
-	Cwd            string `json:"cwd"`
-	ToolName       string `json:"tool_name"`
+	HookEventName  string          `json:"hook_event_name"`
+	SessionID      string          `json:"session_id"`
+	TranscriptPath string          `json:"transcript_path"`
+	Cwd            string          `json:"cwd"`
+	ToolName       string          `json:"tool_name"`
+	ToolInput      json.RawMessage `json:"tool_input"` // 工具完整入参（AskUserQuestion 的 questions 在此）
+	ToolUseID      string          `json:"tool_use_id"` // 本次 tool_use 的唯一 id（监控器多问追踪用）
 }
 
 // liveRecord 是落盘到 live/<pid>.json 的结构,监控器 internal/monitor/bridge.go
@@ -85,6 +87,18 @@ type hookState struct {
 	ToolName       string `json:"toolName"`
 	ToolDepth      int    `json:"toolDepth"`
 	TaskStartedAt  int64  `json:"taskStartedAt"`
+}
+
+// askRecord 落盘到 ask/<pid>.json，捕获活跃会话挂起的 AskUserQuestion。
+// Claude Code 2.1.169+ 活跃会话不落盘 JSONL，AskUserQuestion 的 questions 只能在
+// PreToolUse hook 实时捕获（这是「现在正等用户选择」的唯一实时来源）。
+// Questions 原样透传 tool_input.questions，两端 JSON tag 必须与 internal/monitor/bridge.go
+// 的 AskRecord 一致。
+type askRecord struct {
+	Pid       int             `json:"pid"`
+	Ts        int64           `json:"ts"`
+	ToolUseID string          `json:"toolUseId"`
+	Questions json.RawMessage `json:"questions"`
 }
 
 func main() {
@@ -267,6 +281,65 @@ func writeHookState(pid int, s *hookStdin) {
 	// Stop（一轮无 pending 工具的回复结束）随即继续，若清零会让前端计时锚点丢失、重入
 	// busy 时从 0 重跳。taskStartedAt 的真正重置交给 UserPromptSubmit（新提问=新任务）。
 	writeJSON(filepath.Join(dir, strconv.Itoa(pid)+".json"), rec)
+
+	// AskUserQuestion 挂起态管理。活跃会话 JSONL 不落盘，questions 只能在此实时捕获。
+	// 策略：只有「本次是 AskUserQuestion 的 PreToolUse」才写 ask 文件；任何其他 hook
+	// 事件（PostToolUse 答完 / 新工具 / 新轮次 / Stop）都意味着上一轮 AskUserQuestion 已
+	// 结束，清掉残留 ask 文件。AskUserQuestion 是交互阻塞的，不会嵌套子工具，故按 tool_name
+	// 精确清零即安全。这也兜住了「Esc 取消不触发 PostToolUse」的边界——下一个事件照样清。
+	isFreshAsk := strings.TrimSpace(s.HookEventName) == "PreToolUse" && strings.TrimSpace(s.ToolName) == "AskUserQuestion"
+	if isFreshAsk {
+		writeAsk(pid, s.ToolUseID, s.ToolInput)
+	} else {
+		clearAsk(pid)
+	}
+}
+
+// writeAsk 把挂起的 AskUserQuestion questions 原子写入 ask/<pid>.json。
+// 从 tool_input 抽取 questions 数组；为空/非数组则跳过（不写空壳）。
+func writeAsk(pid int, toolUseID string, toolInput json.RawMessage) {
+	var ti struct {
+		Questions json.RawMessage `json:"questions"`
+	}
+	if len(toolInput) > 0 {
+		_ = json.Unmarshal(toolInput, &ti)
+	}
+	qs := strings.TrimSpace(string(ti.Questions))
+	if qs == "" || qs == "null" || qs[0] != '[' {
+		return
+	}
+	dir := askDir()
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	rec := askRecord{
+		Pid:       pid,
+		Ts:        time.Now().UnixMilli(),
+		ToolUseID: toolUseID,
+		Questions: json.RawMessage(qs),
+	}
+	writeJSON(filepath.Join(dir, strconv.Itoa(pid)+".json"), rec)
+}
+
+// clearAsk 删除 ask/<pid>.json（忽略不存在错误）。
+func clearAsk(pid int) {
+	dir := askDir()
+	if dir == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(dir, strconv.Itoa(pid)+".json"))
+}
+
+// askDir 返回 ~/.cc-console/ask/。
+func askDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cc-console", "ask")
 }
 
 // readPrevLive 读取 pid 现有的 live 记录(供 writeLive 空字段兜底)。

@@ -99,6 +99,10 @@ let askMultiSelectPicks = {};
 // askCustomQuestionIndex 记录是为哪一题输入（切题/关面板时重置）。
 let askCustomPending = false;
 let askCustomQuestionIndex = 0;
+// AskUserQuestion 实时旁路:活跃会话 JSONL 不落盘(2.1.169+),AskUserQuestion 的 questions
+// 只能由 PreToolUse hook 实时捕获(后端 ask/<pid>.json,经 GetChatHistory.pendingAsk 透传)。
+// detectInteraction 在 JSONL 找不到挂起 tool_use 时回退用它合成 kind:'ask'。null=无挂起。
+let currentLiveAsk = null;
 let instanceMeta = {}; // pid → {topic, model}
 let newInstanceSelected = -1; // 新建实例面板当前选中项索引
 let newInstanceItems = [];    // 新建实例面板项：[{type:'dir',path}, {type:'pick'}]
@@ -139,6 +143,7 @@ async function boot() {
   pollBridgeStatus();
   setInterval(refresh, 1000);
   setInterval(pollBridgeStatus, 10000);
+  startUpdateChecks(); // 启动检查一次版本更新，之后每 24h 自动检查
 }
 
 // 加载发送键设置（回车发送 or Shift+回车发送），并刷新输入框提示文案。
@@ -1434,6 +1439,7 @@ window.openChatPanel = async function(pid) {
   chatHistoryHash = 0;
   lastChatMessages = [];
   lastReplySignature = '';
+  currentLiveAsk = null;
   procReset();
   loadSlashSuggestions(pid); // 预载斜杠命令/技能供消息框补全
   // 注意:不重置 ask 多问追踪状态——用户可能关闭面板后重开,中途的多问进度
@@ -1653,6 +1659,12 @@ function procUpdate() {
   var el = document.getElementById('chat-processing');
   if (!el) return;
   if (chatPanelPid === null) { procReset(); return; }
+  // 有交互按钮/横幅在屏(AskUserQuestion / Plan / 权限请求,含自定义输入横幅)时,
+  // 是「等用户输入」而非「处理中」——隐藏 spinner,避免与按钮同屏「Processing…」误导。
+  // 用按钮可见性而非 currentLiveAsk 判定:用户作答后按钮立即隐藏,spinner 能及时回来
+  // (此时 ask 文件可能尚未被 PostToolUse 清掉,若按 currentLiveAsk 判会误藏 spinner)。
+  var replies = document.getElementById('chat-quick-replies');
+  if (replies && !replies.classList.contains('hidden')) { el.classList.add('hidden'); return; }
   var meta = instanceMeta[chatPanelPid];
   if (!meta) { return; } // 实例已退出，保留最后完成态文案
   if (meta.taskStartedAt > 0) {
@@ -1782,6 +1794,7 @@ window.closeChatPanel = function() {
   chatHistoryHash = 0;
   lastChatMessages = [];
   lastReplySignature = '';
+  currentLiveAsk = null;
   procReset();
   askCustomPending = false; // 关面板清掉自定义输入态
   // 不重置 ask 多问追踪(保留中途进度,重开面板可续上)
@@ -1842,6 +1855,8 @@ async function refreshChatMessages(pid) {
     // 避免因 early return 导致面板一直卡在「加载中...」。
     var messages = (result && result.messages) || [];
     var hash = (result && result.hash) || 0;
+    // 实时旁路:每轮刷新同步挂起的 AskUserQuestion(后端实时读 ask 文件,不进 JSONL 缓存)。
+    currentLiveAsk = (result && result.pendingAsk) || null;
     if (hash === chatHistoryHash && chatHistoryHash !== 0 && messages.length > 0) {
       // 消息未变(hash 稳定),但实例状态(busy↔idle)或 AskUserQuestion 多问进度可能已变——
       // 交互按钮的显隐依赖这些信号,必须用最近渲染的消息重新评估,
@@ -2277,7 +2292,31 @@ var NO_CONFIRM_TOOLS = {
 //       AskUserQuestion → 问题选项(取自 tool input)
 //       其他工具        → 权限请求(等 yes/no)
 //   - 已配对(工具执行完毕) → 返回 null
+// buildAskInfoFromLive 由实时旁路的 AskRecord(currentLiveAsk)构造 detectInteraction
+// 的 ask info，结构与 JSONL 分支一致——askQuestions/questions/options 复用现有
+// buildAskButtons / 多问追踪 / 自定义输入全套逻辑，零特判。
+function buildAskInfoFromLive(live) {
+  if (!live || !live.questions || !live.questions.length) return null;
+  var q0 = live.questions[0];
+  var btns = buildAskButtons(q0);
+  if (!btns.length) return null;
+  return {
+    kind: 'ask',
+    hint: '❓ ' + (q0.question || q0.header || '请选择：'),
+    buttons: btns,
+    askToolUseId: live.toolUseId || '',
+    askQuestions: live.questions
+  };
+}
+
 function detectInteraction(messages) {
+  // 实时旁路优先:活跃会话 JSONL 不落盘(2.1.169+),AskUserQuestion 的挂起态只能由
+  // PreToolUse hook 实时捕获(currentLiveAsk)。这是「现在正等用户选择」的权威信号,
+  // 优先于 JSONL 推断——JSONL 末尾 tool_use 多半是更早的已配对调用,会误判为无交互。
+  if (currentLiveAsk) {
+    var liveInfo = buildAskInfoFromLive(currentLiveAsk);
+    if (liveInfo) return liveInfo;
+  }
   // 从末尾找最后一个 tool_use
   var lastToolUseIdx = -1;
   for (var i = messages.length - 1; i >= 0; i--) {
@@ -2983,6 +3022,7 @@ window.switchSettingsCat = function(cat) {
   document.getElementById("settings-general").classList.toggle("hidden", cat !== "general");
   document.getElementById("settings-system").classList.toggle("hidden", cat !== "system");
   document.getElementById("settings-about").classList.toggle("hidden", cat !== "about");
+  if (cat === "about") refreshAboutUpdateArea(); // 已缓存新版本时直接展示
 };
 
 window.saveSetting = async function(key, val) {
@@ -3054,6 +3094,86 @@ window.openSettingsGithub = async function() {
 // ---- Update ----
 let pendingDownloadURL = "";
 
+// 版本检查：应用启动时触发一次，之后每 24h 自动触发一次；
+// 在「关于」页手动检查后重新计时 24h。
+let lastKnownUpdate = null;        // 已知的新版本 ReleaseInfo；null 表示无新版本/尚未发现
+let autoUpdateTimer = null;        // 24h 自动检查定时器句柄
+const AUTO_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+// applyUpdateBadge 依据是否有新版本，显示/隐藏首页右上角的徽标按钮。
+function applyUpdateBadge(info) {
+  lastKnownUpdate = info || null;
+  var btn = document.getElementById('update-badge-btn');
+  if (!btn) return;
+  if (info) {
+    btn.textContent = '🆕 新版本 v' + (info.version || '');
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
+}
+
+// scheduleAutoUpdateCheck 清除旧定时器并安排 24h 后再次自动检查。
+// 手动检查后也调用本函数，以「重新计时」。
+function scheduleAutoUpdateCheck() {
+  if (autoUpdateTimer) clearTimeout(autoUpdateTimer);
+  autoUpdateTimer = setTimeout(function() {
+    runUpdateCheck(false).finally(scheduleAutoUpdateCheck);
+  }, AUTO_UPDATE_INTERVAL_MS);
+}
+
+// refreshAboutUpdateArea 若已缓存新版本信息，则在「关于」页直接展示，省去再次手动检查。
+function refreshAboutUpdateArea() {
+  if (!lastKnownUpdate) return;
+  document.getElementById('update-version').textContent = 'v' + (lastKnownUpdate.version || '');
+  document.getElementById('update-notes').textContent = lastKnownUpdate.body || '';
+  pendingDownloadURL = lastKnownUpdate.downloadUrl || '';
+  showUpdateStatus('update-available');
+}
+
+// runUpdateCheck 执行一次版本检查。
+// detailed=true：同步刷新「关于」页 update-area 的检查中/结果/错误状态（手动检查用）。
+// detailed=false：静默（启动/自动检查用），仅更新徽标；若用户恰在「关于」页则同步刷新。
+// 返回 ReleaseInfo（有新版本）或 null；内部捕获异常，永不 reject。
+async function runUpdateCheck(detailed) {
+  if (detailed) showUpdateStatus('update-checking');
+  try {
+    var info = await Call.ByID(ID_CHECK_UPDATE);
+    applyUpdateBadge(info);
+    if (info) {
+      // 发现新版本：若用户正在「关于」页，同步展示结果
+      var aboutVisible = !document.getElementById('settings-about').classList.contains('hidden');
+      if (detailed || aboutVisible) {
+        document.getElementById('update-version').textContent = 'v' + (info.version || '');
+        document.getElementById('update-notes').textContent = info.body || '';
+        pendingDownloadURL = info.downloadUrl || '';
+        showUpdateStatus('update-available');
+      }
+    } else if (detailed) {
+      showUpdateStatus('update-uptodate');
+    }
+    return info;
+  } catch (e) {
+    applyUpdateBadge(null);
+    if (detailed) {
+      var errMsg = e && e.message ? e.message : '检查失败，请检查网络';
+      var errEl = document.getElementById('update-error');
+      if (errMsg.indexOf('限流') >= 0 || errMsg.indexOf('网络请求失败') >= 0) {
+        errEl.innerHTML = '⚠ ' + errMsg + '<br><button class="about-link" style="margin-top:6px" onclick="window.openSettingsGithub()">在浏览器中查看 Releases</button>';
+      } else {
+        errEl.textContent = '⚠ ' + errMsg;
+      }
+      showUpdateStatus('update-error');
+    }
+    return null;
+  }
+}
+
+// 启动即检查一次，随后每 24h 自动检查（手动检查会重置计时）。
+function startUpdateChecks() {
+  runUpdateCheck(false).finally(scheduleAutoUpdateCheck);
+}
+
 function showUpdateStatus(which) {
   // 互斥：只显示一个状态 span，移除 hidden 类并用 display 控制
   var area = document.getElementById("update-area");
@@ -3071,42 +3191,21 @@ window.checkUpdateManually = async function() {
 
   var label = btn.textContent;
   btn.disabled = true;
-  btn.textContent = label + " (冷却 10s)";
 
-  // 倒计时显示
-  var remain = 10;
-  var timer = setInterval(function() {
-    remain--;
-    if (remain <= 0) {
-      clearInterval(timer);
-      btn.textContent = label;
-      btn.disabled = false;
-    } else {
-      btn.textContent = label + " (冷却 " + remain + "s)";
-    }
-  }, 1000);
-
-  showUpdateStatus("update-checking");
-  try {
-    var info = await Call.ByID(ID_CHECK_UPDATE);
-    if (info) {
-      document.getElementById("update-version").textContent = "v" + (info.version || "");
-      document.getElementById("update-notes").textContent = info.body || "";
-      pendingDownloadURL = info.downloadUrl || "";
-      showUpdateStatus("update-available");
-    } else {
-      showUpdateStatus("update-uptodate");
-    }
-  } catch (e) {
-    var errMsg = e && e.message ? e.message : "检查失败，请检查网络";
-    var errEl = document.getElementById("update-error");
-    if (errMsg.indexOf("限流") >= 0 || errMsg.indexOf("网络请求失败") >= 0) {
-      errEl.innerHTML = '⚠ ' + errMsg + '<br><button class="about-link" style="margin-top:6px" onclick="window.openSettingsGithub()">在浏览器中查看 Releases</button>';
-    } else {
-      errEl.textContent = "⚠ " + errMsg;
-    }
-    showUpdateStatus("update-error");
+  // 点击后置灰，结果回来时恢复；同时挂一个 15s 超时兜底强制恢复（UI 不体现）
+  var restored = false;
+  function restoreBtn() {
+    if (restored) return;
+    restored = true;
+    clearTimeout(timeoutId);
+    btn.textContent = label;
+    btn.disabled = false;
   }
+  var timeoutId = setTimeout(restoreBtn, 15000);
+
+  await runUpdateCheck(true);
+  restoreBtn();
+  scheduleAutoUpdateCheck(); // 手动检查后重新计时 24h
 };
 
 window.downloadUpdate = async function() {
@@ -3151,6 +3250,12 @@ window.downloadUpdate = async function() {
     bar.classList.add("hidden");
     fill.style.width = "0%";
   }
+};
+
+// 点击首页徽标：打开「关于」页并展示已缓存的新版本信息（无需再手动检查一次）。
+window.openAboutUpdate = async function() {
+  await showSettings();
+  switchSettingsCat('about');
 };
 
 // Bind the check button

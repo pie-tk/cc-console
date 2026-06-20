@@ -52,6 +52,18 @@ type HookState struct {
 	TaskStartedAt  int64  `json:"taskStartedAt"`
 }
 
+// AskRecord 对应 slhook 写入的 ask/<pid>.json，捕获活跃会话挂起的 AskUserQuestion。
+// Claude Code 2.1.169+ 活跃会话不落盘 JSONL，AskUserQuestion 的 questions 只能由
+// PreToolUse hook 实时捕获，这是前端渲染选择按钮的唯一实时来源。两端 JSON tag 必须与
+// cmd/slhook 的 askRecord 一致。Questions 原样透传 tool_input.questions（不解析，
+// 避免 AskUserQuestion option 结构差异导致丢字段）。
+type AskRecord struct {
+	Pid       int             `json:"pid"`
+	Ts        int64           `json:"ts"` // slhook 写入时刻(epoch ms)
+	ToolUseID string          `json:"toolUseId"`
+	Questions json.RawMessage `json:"questions"`
+}
+
 const (
 	liveFreshMs int64 = 60000 // live 文件 mtime 距 now < 60s 视为新鲜(idle 时 statusline 刷新频率低,放宽容忍)
 	liveBusyMs  int64 = 3000  // live 文件 mtime 距 now < 3s 视为 busy(statusline 正频繁刷新)
@@ -115,6 +127,24 @@ func HookPath(pid int) string {
 	return filepath.Join(d, strconv.Itoa(pid)+".json")
 }
 
+// AskDir 返回 AskUserQuestion 挂起态文件目录。
+func AskDir() string {
+	d := appDataDir()
+	if d == "" {
+		return ""
+	}
+	return filepath.Join(d, "ask")
+}
+
+// AskPath 返回 pid 对应的 ask 文件路径。
+func AskPath(pid int) string {
+	d := AskDir()
+	if d == "" {
+		return ""
+	}
+	return filepath.Join(d, strconv.Itoa(pid)+".json")
+}
+
 // ReadLive 读取并解析 pid 的 live 文件。
 // 返回:记录、文件 mtime(epoch ms)、是否新鲜、是否成功解析。
 func ReadLive(pid int, nowMs int64) (rec LiveRecord, mtimeMs int64, fresh bool, ok bool) {
@@ -169,6 +199,29 @@ func ReadHookState(pid int) (state HookState, mtimeMs int64, ok bool) {
 // CleanHookFiles 删除不在 alivePids 中的 hook 状态文件(对应进程已退出)。
 func CleanHookFiles(alivePids map[int]bool) {
 	cleanPidFiles(HookDir(), alivePids)
+}
+
+// ReadAsk 读取并解析 pid 的 ask 文件（挂起的 AskUserQuestion）。
+// 返回记录与是否成功解析；文件不存在/解析失败返回 ok=false。
+func ReadAsk(pid int) (AskRecord, bool) {
+	var rec AskRecord
+	path := AskPath(pid)
+	if path == "" {
+		return rec, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return rec, false
+	}
+	if json.Unmarshal(data, &rec) != nil {
+		return rec, false
+	}
+	return rec, true
+}
+
+// CleanAskFiles 删除不在 alivePids 中的 ask 文件(对应进程已退出)。
+func CleanAskFiles(alivePids map[int]bool) {
+	cleanPidFiles(AskDir(), alivePids)
 }
 
 func cleanPidFiles(dir string, alivePids map[int]bool) {

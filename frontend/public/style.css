@@ -697,6 +697,26 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .new-instance-btn:hover { opacity: 0.9; }
 .empty-new-btn { margin-top: 16px; padding: 8px 22px; font-size: 10pt; }
 
+/* 首页右上角「新版本可用」徽标（启动/自动检查发现新版本时显示） */
+.update-badge-btn {
+  background: var(--accent);
+  color: #FFF;
+  border: 1px solid var(--accent);
+  font-size: 9pt;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 10px;
+  margin-left: 10px;
+  line-height: 1;
+  border-radius: 6px;
+  transition: opacity 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+.update-badge-btn:hover { opacity: 0.9; }
+.update-badge-btn.hidden { display: none; }
+
 /* 最近目录快速选择面板 */
 .new-instance-dialog { width: 560px; max-height: 80vh; }
 .recent-list { max-height: 320px; overflow-y: auto; padding: 4px 12px; margin: 0 12px 8px; }
