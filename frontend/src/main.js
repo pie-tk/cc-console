@@ -25,6 +25,7 @@ const ID_PICK_DIRECTORY = 432997876;
 const ID_GET_COMMANDS = 266082154; // GetCommandSuggestions(pid)
 const ID_SAVE_LIST_PREFS = 3233443589; // SaveListPrefs(sortField, sortDir)
 const ID_ACT_ASK_ANSWER = 1941433663; // ActAskAnswer(pid, actionsJSON) — AskUserQuestion 按键序列注入
+const ID_GET_ACCOUNT_USAGE = 1426129106; // GetAccountUsage() — 账号用量（GLM 配额 / DeepSeek 余额）
 
 // ---- State ----
 let currentPids = [];
@@ -33,6 +34,7 @@ let footTimer = null;
 let sortField = 'updatedAt';
 let sortDir = 'desc';
 let chatPanelPid = null;
+let usageState = null; // 账号级用量（GLM 配额 / DeepSeek 余额，全局唯一，与实例解耦）
 let chatHistoryHash = 0;
 let chatRefreshTimer = null;
 let lastChatMessages = [];      // 最近一次渲染的消息，供未变 hash 时重新评估交互按钮
@@ -120,6 +122,14 @@ let slashIdx = 0;         // 选中下标
 let slashOpen = false;    // 下拉是否展开
 let slashInput = null;    // 当前绑定的 textarea（chat-input 或 prompt-input）
 
+// ---- 输入历史导航（↑/↓ 切换历史消息）----
+// 数据源：当前会话对话历史里的 user 真实消息 ∪ 本输入框发送历史栈，合并去重。
+// 发送历史栈补上「活跃会话 JSONL 不落盘」导致 lastChatMessages 滞后的最新发送。
+let chatSendHistory = [];      // 发送历史栈：跨会话累积，去重，最新在末尾
+let chatHistoryIdx = -1;       // 导航索引：-1=未导航；[0..len]，len=最新之后(空/草稿)
+let chatHistoryDraft = '';     // 进入导航前保存的当前草稿
+let chatHistoryFilling = false;// 导航填充置位，防 input 误判为手动编辑而脱离
+
 // ---- 目录筛选状态（纯前端，本次启动生效，不持久化）----
 // dirFilterHidden 记录被隐藏的 cwd（→ true）；未记录的目录默认显示。
 let dirFilterHidden = {};
@@ -127,6 +137,17 @@ let dirFilterSig = '';   // 唯一目录签名，变化时才重建下拉 DOM（
 
 // ---- 聊天面板回溯提示 ----
 let chatHintTimer = null;
+
+// fetchAccountUsage 拉取账号级用量（按当前后端：GLM 配额 / DeepSeek 余额），存全局 usageState。
+// 低频轮询（60s）+ 后端 120s 缓存兜底（且感知 settings.json 变化）；网络错误不清空上次有效值。
+async function fetchAccountUsage() {
+  try {
+    var u = await Call.ByID(ID_GET_ACCOUNT_USAGE);
+    if (u) usageState = u;
+  } catch (e) {
+    console.warn("GetAccountUsage failed:", e);
+  }
+}
 
 // ---- Boot ----
 async function boot() {
@@ -143,6 +164,8 @@ async function boot() {
   pollBridgeStatus();
   setInterval(refresh, 1000);
   setInterval(pollBridgeStatus, 10000);
+  fetchAccountUsage();
+  setInterval(fetchAccountUsage, 15000); // 账号用量轮询：15s 拉取（后端 60s 缓存兜底 + settings.json 切换感知）
   startUpdateChecks(); // 启动检查一次版本更新，之后每 24h 自动检查
 }
 
@@ -219,6 +242,15 @@ async function refresh() {
     updateClock();
     renderCards(live, stale);
     updateFooter(live, stats);
+    renderUsageBadge(); // 首页顶部账号用量徽标（每秒刷新，倒计时走）
+
+    // 面板指向的实例已退出（从列表消失）→ 自动关闭，避免残留死面板无法交互。
+    // instanceMeta 由 renderCards 用 live+stale 重建，实例消失后即变 undefined。
+    if (chatPanelPid !== null && !instanceMeta[chatPanelPid]) {
+      var gonePid = chatPanelPid;
+      closeChatPanel();
+      flashFoot("📭  实例 PID " + gonePid + " 已退出，对话面板已自动关闭");
+    }
 
     // 聊天面板打开时同步刷新消息 + 底部 context/tokens 信息条
     if (chatPanelPid !== null) {
@@ -299,6 +331,45 @@ function updateStats(stats) {
       badge.className = "bridge-badge";
     }
   }
+}
+
+// renderUsageBadge 渲染首页顶部账号用量徽标（账号级，随 refresh 每秒刷新，倒计时走）。
+// GLM → 「📊 N% · Xh」(hover 月度)；DeepSeek → 「💰 ¥X」(hover 赠送/充值)；其余隐藏。
+function renderUsageBadge() {
+  var el = document.getElementById("usage-badge");
+  if (!el) return;
+  var u = usageState;
+  if (!u || !u.available || (u.provider !== "glm" && u.provider !== "deepseek")) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  if (u.provider === "glm") {
+    var t = u.tokens || {};
+    var pct = t.percentage || 0;
+    var cls = quotaBarClass(pct);
+    el.textContent = "📊 " + pct + "% · " + quotaCountdownShort(t.nextResetTime || 0);
+    el.title = quotaMonthlyTooltip(u);
+    el.className = "usage-badge" + (cls ? " " + cls : "");
+  } else {
+    el.textContent = "💰 " + balanceDisplay(u.balance);
+    el.title = balanceTooltip(u.balance);
+    el.className = "usage-badge";
+  }
+}
+
+// quotaCountdownShort 简短倒计时（首页徽标用）：只取最大单位 h/m/s。
+function quotaCountdownShort(nextResetMs) {
+  if (!nextResetMs) return "";
+  var ms = nextResetMs - Date.now();
+  if (ms <= 0) return "即将重置";
+  var s = Math.floor(ms / 1000);
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  if (h > 0) return h + "h";
+  if (m > 0) return m + "m";
+  return s + "s";
 }
 
 function updateClock() {
@@ -1183,6 +1254,94 @@ function isAnnotationOnly(text) {
   return t.replace(/\s/g, '').length === 0;
 }
 
+// ---- 输入历史导航：↑/↓ 在 #chat-input 中切换历史消息 ----
+
+// cleanChatHistoryText 复刻 isAnnotationOnly 的注解清洗，但返回清洗后的纯文本（而非布尔）。
+// 供输入历史导航提取 user 消息的可读文本：去掉 system-reminder/env/命令三件套等噪音，
+// 只保留人类真实输入。清洗后为空的消息不计入历史。
+function cleanChatHistoryText(text) {
+  if (!text) return '';
+  var t = stripAnsi(text);
+  // 移除命令三件套（name..args 或 name..name）
+  t = t.replace(/<command-name>[\s\S]*?(?:<\/command-args>|<\/command-name>)/g, '');
+  // 移除各 remove 标签（含内容），用反向引用配对开闭
+  t = t.replace(/<(system-reminder|env|user-memory-content|task-notification|task-reminder|persisted-output|local-command-caveat|local-command-stdout|local-command-stderr|command-message|command-args|command-body|thinking|antThinking)\b[^>]*>[\s\S]*?<\/\1>/g, '');
+  // 剥 excerpt/bash 外壳（保留内文）
+  t = t.replace(/<\/?(excerpt|bash-input|bash-stdout|bash-stderr)\b[^>]*>/g, '');
+  // 残片兜底
+  t = t.replace(new RegExp('<\\/?(?:' + CC_TAG_ALT + ')\\b[^>]*>', 'g'), '');
+  return t.replace(/\r/g, '').trim();
+}
+
+// collectChatHistory 合并「对话历史里的 user 真实消息」与「发送历史栈」，按文本去重，
+// 返回从旧到新的数组。user content 已是纯文本（Go 端 parseContentBlocks 拆分），但可能
+// 混 system-reminder 等注解，故经 cleanChatHistoryText 清洗；纯注解消息由 isAnnotationOnly 排除。
+function collectChatHistory() {
+  var seen = Object.create(null), list = [];
+  for (var i = 0; i < lastChatMessages.length; i++) {
+    var m = lastChatMessages[i];
+    if (m.role !== 'user' || isAnnotationOnly(m.content || '')) continue;
+    var t = cleanChatHistoryText(m.content || '');
+    if (t && !seen[t]) { seen[t] = 1; list.push(t); }
+  }
+  for (var j = 0; j < chatSendHistory.length; j++) {
+    var s = chatSendHistory[j];
+    if (s && !seen[s]) { seen[s] = 1; list.push(s); }
+  }
+  return list;
+}
+
+// navigateChatHistory 按 dir（-1=↑向旧，+1=↓向新）切换 #chat-input 内容到历史项。
+// 沿用终端 shell history 语义：↑看更早、↓回到更新，越过最新回到进入前的草稿。
+function navigateChatHistory(dir) {
+  var input = document.getElementById("chat-input");
+  if (!input) return;
+  var list = collectChatHistory();
+  if (list.length === 0) return; // 无历史，不进入导航
+  if (chatHistoryIdx === -1) {
+    chatHistoryDraft = input.value; // 进入导航前保存当前草稿
+    chatHistoryIdx = list.length;   // 指向「最新之后」= 空输入/草稿
+  }
+  chatHistoryIdx += dir;
+  if (chatHistoryIdx < 0) chatHistoryIdx = 0; // 到顶停住
+  if (chatHistoryIdx > list.length) chatHistoryIdx = list.length; // 到底停住
+  var text = (chatHistoryIdx === list.length) ? chatHistoryDraft : list[chatHistoryIdx];
+  chatHistoryFilling = true; // 程序化设值会同步触发 input，置位防 onChatHistoryInput 误判脱离
+  input.value = text;
+  chatHistoryFilling = false;
+  input.scrollTop = input.scrollHeight; // 多行历史项滚到底
+  var pos = text.length;
+  try { input.setSelectionRange(pos, pos); } catch (e) { /* 旧浏览器兜底 */ }
+}
+
+// onChatHistoryKey 绑在 #chat-input 的 keydown：↑/↓ 触发历史导航。
+// 让步规则：斜杠补全菜单展开时让出（归补全导航）；IME 组词中不拦截；
+// 多行编辑时光标不在首/末行时放行默认行间移动，避免劫持方向键。
+function onChatHistoryKey(e) {
+  if (slashOpen) return;     // 斜杠补全优先
+  if (e.isComposing) return; // 中文输入法组词中
+  var key = e.key;
+  if (key !== "ArrowUp" && key !== "ArrowDown") return;
+  var el = e.currentTarget;
+  var caret = el.selectionStart || 0;
+  if (key === "ArrowUp") {
+    // 仅当光标在第一行（前面无换行）才导航，否则让光标上移
+    if (el.value.substring(0, caret).indexOf("\n") !== -1) return;
+  } else {
+    // 仅当光标在最后一行（后面无换行）才导航
+    if (el.value.substring(caret).indexOf("\n") !== -1) return;
+  }
+  e.preventDefault();
+  navigateChatHistory(key === "ArrowUp" ? -1 : 1);
+}
+
+// onChatHistoryInput 绑在 #chat-input 的 input：用户手动编辑（非导航填充）即视为脱离历史，
+// 重置导航索引；草稿由 saveChatDraft 自然跟进。
+function onChatHistoryInput() {
+  if (chatHistoryFilling) return; // 导航填充触发，不脱离
+  chatHistoryIdx = -1;
+}
+
 // ---- Display helpers ----
 function statusEmoji(s) {
   if (s === "busy") return "🔴";
@@ -1320,6 +1479,72 @@ function contextBarClass(inst) {
   return "high";
 }
 
+// ---- GLM 账号配额（chat-stats 第三组，账号级全局，与实例解耦）----
+
+// quotaBarClass 按配额用量分档配色：撞 5h token 上限会硬停工作，阈值比 context 更激进。
+function quotaBarClass(pct) {
+  if (pct < 80) return "";
+  if (pct < 95) return "mid";
+  return "high";
+}
+
+// quotaCountdownText 把下次重置时刻格式化为倒计时文案（每秒随 renderChatStats 刷新）。
+function quotaCountdownText(nextResetMs) {
+  if (!nextResetMs) return "";
+  var ms = nextResetMs - Date.now();
+  if (ms <= 0) return "即将重置";
+  var s = Math.floor(ms / 1000);
+  var h = Math.floor(s / 3600); s -= h * 3600;
+  var m = Math.floor(s / 60); s -= m * 60;
+  if (h > 0) return h + "h " + m + "m 后重置";
+  if (m > 0) return m + "m " + s + "s 后重置";
+  return s + "s 后重置";
+}
+
+// quotaMonthlyTooltip 拼接月度配额 tooltip（挂在百分比元素 title，不占主行空间）。
+function quotaMonthlyTooltip(q) {
+  var parts = [];
+  if (q.level) parts.push(q.level);
+  var mo = q.monthly;
+  if (mo) {
+    var seg = "月度 " + (mo.percentage || 0) + "%";
+    if (mo.usage > 0) {
+      seg += " (" + (mo.currentValue || 0) + "/" + mo.usage + (mo.remaining > 0 ? ", 剩 " + mo.remaining : "") + ")";
+    }
+    parts.push(seg);
+  }
+  return parts.join(" · ");
+}
+
+// renderQuotaBar 就地更新配额胶囊条，复用 ctx-progress 形状/配色（CSS 仅缩窄尺寸）。
+function renderQuotaBar(el, pct, cls) {
+  if (!el) return;
+  var fill = el.querySelector(".ctx-progress-fill");
+  if (!fill) {
+    el.innerHTML = '<span class="ctx-progress-track"><span class="ctx-progress-fill"></span></span>';
+    fill = el.querySelector(".ctx-progress-fill");
+  }
+  el.className = "ctx-progress" + (cls ? " " + cls : "");
+  if (fill) fill.style.width = Math.min(100, Math.max(0, pct)) + "%";
+}
+
+// balanceDisplay 把 DeepSeek 余额格式化为带币种符号的文本（CNY→¥，否则用 currency code）。
+function balanceDisplay(b) {
+  if (!b || !b.total) return "—";
+  var sym = b.currency === "CNY" ? "¥" : (b.currency ? b.currency + " " : "");
+  return sym + b.total;
+}
+
+// balanceTooltip 拼接 DeepSeek 余额明细（赠送/充值拆分），挂百分比元素 title。
+function balanceTooltip(b) {
+  if (!b) return "";
+  var sym = b.currency === "CNY" ? "¥" : "";
+  var parts = [];
+  if (b.granted) parts.push("赠送 " + sym + b.granted);
+  if (b.toppedUp) parts.push("充值 " + sym + b.toppedUp);
+  return parts.join(" · ");
+}
+
 function contextPct(inst) {
   if (!inst.hasConversation || inst.contextTokens <= 0 || inst.contextLimit <= 0) return "";
   return Math.round(inst.contextTokens * 100 / inst.contextLimit) + "%";
@@ -1438,6 +1663,7 @@ window.openChatPanel = async function(pid) {
   chatPanelPid = pid;
   chatHistoryHash = 0;
   lastChatMessages = [];
+  chatHistoryIdx = -1; // 打开新会话重置导航索引，从头开始
   lastReplySignature = '';
   currentLiveAsk = null;
   procReset();
@@ -1781,6 +2007,42 @@ function renderChatStats(pid) {
     cwdEl.title = cwd;
     cwdEl.style.display = cwd ? "" : "none";
   }
+
+  // 账号用量（账号级，全局 usageState，与 pid 无关）：按后端 provider 分发
+  //   glm → 配额（5h token 胶囊 + % + 重置倒计时 + 月度 tooltip）
+  //   deepseek → 余额（¥total + 赠送/充值 tooltip，不显示胶囊与倒计时）
+  var usageGroup = document.getElementById("chat-quota-group");
+  var labelEl = document.getElementById("chat-quota-label");
+  var barEl = document.getElementById("chat-quota-bar");
+  var pctEl = document.getElementById("chat-quota-pct");
+  var resetEl = document.getElementById("chat-quota-reset");
+  var u = usageState;
+  var show = u && u.available && (u.provider === "glm" || u.provider === "deepseek");
+  if (!show) {
+    if (usageGroup) usageGroup.classList.add("hidden");
+  } else if (usageGroup) {
+    usageGroup.classList.remove("hidden");
+    if (u.provider === "glm") {
+      if (labelEl) labelEl.textContent = "配额";
+      if (barEl) barEl.style.display = "";
+      if (resetEl) resetEl.style.display = "";
+      var t = u.tokens || {};
+      var pct = t.percentage || 0;
+      var cls = quotaBarClass(pct);
+      renderQuotaBar(barEl, pct, cls);
+      if (pctEl) { pctEl.textContent = pct + "%"; pctEl.className = "context-pct " + cls; pctEl.title = quotaMonthlyTooltip(u); }
+      if (resetEl) resetEl.textContent = quotaCountdownText(t.nextResetTime || 0);
+    } else if (u.provider === "deepseek") {
+      if (labelEl) labelEl.textContent = "余额";
+      if (barEl) barEl.style.display = "none";    // 余额不显示配额胶囊
+      if (resetEl) resetEl.style.display = "none"; // 余额没有重置概念
+      if (pctEl) {
+        pctEl.textContent = balanceDisplay(u.balance);
+        pctEl.className = "context-pct";          // 余额态去掉 mid/high 配色
+        pctEl.title = balanceTooltip(u.balance);
+      }
+    }
+  }
 }
 
 window.closeChatPanel = function() {
@@ -1793,6 +2055,7 @@ window.closeChatPanel = function() {
   chatPanelPid = null;
   chatHistoryHash = 0;
   lastChatMessages = [];
+  chatHistoryIdx = -1; // 关面板重置导航索引，避免串到下一个会话
   lastReplySignature = '';
   currentLiveAsk = null;
   procReset();
@@ -1958,6 +2221,12 @@ window.sendChatMessage = async function() {
     input.value = "";
     input.style.height = ""; // 重置 textarea 高度
     delete chatDrafts[chatDraftKey()]; // 发送成功，清除草稿
+    // 记入发送历史栈（去重后移到末尾），补上 JSONL 未落盘的最新发送
+    var hi = chatSendHistory.indexOf(text);
+    if (hi !== -1) chatSendHistory.splice(hi, 1);
+    chatSendHistory.push(text);
+    if (chatSendHistory.length > 200) chatSendHistory.shift();
+    chatHistoryIdx = -1; // 发送后退出历史导航态
     // 乐观显示已发送的消息
     var container = document.getElementById("chat-messages");
     var optHTML = '<div class="chat-msg chat-msg-user">'
@@ -2626,6 +2895,8 @@ function initSlashAutocomplete() {
   if (chatInput) {
     chatInput.addEventListener("input", onSlashInput);
     chatInput.addEventListener("input", saveChatDraft);
+    chatInput.addEventListener("input", onChatHistoryInput); // 手动编辑即脱离历史导航
+    chatInput.addEventListener("keydown", onChatHistoryKey); // ↑/↓ 切换历史消息
     chatInput.addEventListener("blur", function() { setTimeout(hideSlash, 120); });
   }
   var promptInput = document.getElementById("prompt-input");

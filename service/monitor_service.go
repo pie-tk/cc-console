@@ -89,6 +89,12 @@ func (s *MonitorService) GetClock() string {
 	return time.Now().Format("15:04:05")
 }
 
+// GetAccountUsage 返回当前后端的账号用量（GLM=配额 / DeepSeek=余额），带 120s 内存缓存。
+// 缓存感知 settings.json 变化：换后端/换 key 后下一轮轮询即重查。不支持的后端返回 Available=false。
+func (s *MonitorService) GetAccountUsage() *monitor.AccountUsage {
+	return monitor.GetAccountUsage()
+}
+
 // ---- 操作 ----
 
 // ActClear 清空目标实例的对话。
@@ -266,7 +272,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.4.2"
+const Version = "1.4.3"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {

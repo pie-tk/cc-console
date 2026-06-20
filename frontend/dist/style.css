@@ -122,6 +122,19 @@ body {
 .bridge-badge.warn { color: #d97706; font-weight: 500; }
 body.dark .bridge-badge.warn { color: #f59e0b; }
 
+/* 首页顶部账号用量徽标（GLM 配额 / DeepSeek 余额）；mid/high 按配额阈值变色 */
+.usage-badge {
+  font-size: 9pt;
+  color: var(--status-idle);
+  margin-left: 8px;
+  white-space: nowrap;
+  cursor: default;
+}
+.usage-badge.mid { color: #d97706; font-weight: 500; }
+.usage-badge.high { color: #dc2626; font-weight: 600; }
+body.dark .usage-badge.mid { color: #f59e0b; }
+body.dark .usage-badge.high { color: #f87171; }
+
 .clock {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 9pt;
@@ -1417,6 +1430,10 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 
 /* 卡片 context 行的胶囊进度条更紧凑（腾出空间给 Context 标签；聊天面板沿用上方 150px 默认宽度） */
 .card-context .ctx-progress-track { width: 84px; height: 7px; }
+
+/* 聊天面板配额分组：复用 ctx-progress 形状/配色，仅缩窄腾位；倒计时文本次要色 */
+#chat-quota-bar .ctx-progress-track { width: 90px; height: 7px; }
+.chat-quota-reset { font-size: 10pt; color: var(--secondary-text); white-space: nowrap; }
 
 .chat-send-btn {
   padding: 8px 16px;

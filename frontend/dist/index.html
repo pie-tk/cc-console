@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="/style.css">
   <title>CC Console</title>
-  <script type="module" crossorigin src="/assets/index-BPVFIFAR.js"></script>
+  <script type="module" crossorigin src="/assets/index-B9kF2p8m.js"></script>
 </head>
 <body>
   <div id="app">
@@ -20,6 +20,7 @@
       <div class="stats-row">
         <span id="stats" class="stats-text">正在检测...</span>
         <span id="bridge-badge" class="bridge-badge"></span>
+        <span id="usage-badge" class="usage-badge hidden"></span>
         <span class="flex-spacer"></span>
         <span id="clock" class="clock"></span>
         <button id="new-instance-btn" class="new-instance-btn" title="新建 Claude Code 实例" onclick="openNewInstancePanel()">＋ 新建实例</button>
@@ -141,6 +142,12 @@
         <span class="chat-stat-group">
           <span class="chat-stat-label">Tokens</span>
           <span id="chat-tokens" class="chat-tokens"></span>
+        </span>
+        <span class="chat-stat-group hidden" id="chat-quota-group">
+          <span class="chat-stat-label" id="chat-quota-label">配额</span>
+          <span id="chat-quota-bar" class="ctx-progress"></span>
+          <span id="chat-quota-pct" class="context-pct"></span>
+          <span id="chat-quota-reset" class="chat-quota-reset"></span>
         </span>
       </div>
     </div>
