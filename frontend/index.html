@@ -14,7 +14,6 @@
         <span class="hero-emoji">📊</span>
         <h1 class="hero-title">CC Console</h1>
       </div>
-      <p class="subtitle">实时监控本机运行中的所有 Claude Code 实例</p>
       <div class="spacer-8"></div>
       <div class="stats-row">
         <span id="stats" class="stats-text">正在检测...</span>
@@ -30,12 +29,12 @@
     <!-- 卡片列表 -->
     <div id="cards-container">
       <div id="sort-bar">
-        <button class="sort-btn active" data-sort="updatedAt" data-dir="desc" onclick="handleSort('updatedAt')">最后活动 <span class="sort-arrow">↓</span></button>
-        <button class="sort-btn" data-sort="startedAt" data-dir="desc" onclick="handleSort('startedAt')">建立时间 <span class="sort-arrow">↓</span></button>
+        <button class="sort-btn" data-sort="updatedAt" data-dir="desc" onclick="handleSort('updatedAt')">最后活动 <span class="sort-arrow">↓</span></button>
+        <button class="sort-btn active" data-sort="startedAt" data-dir="desc" onclick="handleSort('startedAt')">建立时间 <span class="sort-arrow">↓</span></button>
         <button class="sort-btn" data-sort="contextTokens" data-dir="desc" onclick="handleSort('contextTokens')">Context 用量 <span class="sort-arrow">↓</span></button>
         <span class="flex-spacer"></span>
         <div class="dir-filter-wrap" id="dir-filter-wrap">
-          <button id="dir-filter-btn" class="filter-btn" onclick="toggleDirFilter(event)">📂 目录</button>
+          <button id="dir-filter-btn" class="filter-btn" onclick="toggleDirFilter(event)">📂 目录筛选</button>
           <div id="dir-filter-dropdown" class="dir-filter-dropdown hidden">
             <label class="dir-filter-all"><input type="checkbox" id="dir-filter-selectall" onchange="onDirFilterAllChange()"> <span>全选</span></label>
             <div id="dir-filter-list" class="dir-filter-list"></div>

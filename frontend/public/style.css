@@ -19,7 +19,7 @@
   --status-idle: #448361;
   --status-unknown: #9B9A97;
   --context-low: #448361;
-  --context-mid: #CB912F;
+  --context-mid: #E8772E;
   --context-high: #D44C47;
   --success: #448361;
   --warning: #CB912F;
@@ -126,8 +126,9 @@ body {
   cursor: default;
 }
 .usage-badge .ctx-progress-track { width: 56px; height: 6px; }
+.usage-sep { width: 1px; height: 14px; background: var(--divider); align-self: center; flex-shrink: 0; }
 .usage-reset { font-size: 8.5pt; color: var(--subtle-text); }
-.usage-value { font-weight: 500; color: var(--secondary-text); }
+.usage-value { font-weight: 500; color: var(--context-low); }
 .usage-value.mid { color: var(--context-mid); font-weight: 600; }
 .usage-value.high { color: var(--context-high); font-weight: 600; }
 
@@ -145,7 +146,7 @@ body {
   overflow-y: auto;
   scrollbar-width: none;  /* Firefox */
   -ms-overflow-style: none;  /* IE/Edge */
-  padding: 16px 14px 18px;
+  padding: 0 14px 18px;
 }
 #cards-container::-webkit-scrollbar { display: none; } /* Chrome/Safari */
 
@@ -156,10 +157,15 @@ body {
 }
 
 /* ===== Sort Bar ===== */
+/* sticky 固定在列表顶部：卡片滚动时排序栏不动，背景遮挡滚上来的卡片 */
 #sort-bar {
   display: flex;
   gap: 6px;
-  padding: 0 0 8px 0;
+  padding: 8px 0 8px 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--window-bg);
 }
 .sort-btn {
   background: var(--card-bg);

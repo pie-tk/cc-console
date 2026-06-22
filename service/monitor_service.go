@@ -272,7 +272,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.4.4"
+const Version = "1.4.5"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
@@ -284,7 +284,7 @@ func (s *MonitorService) GetSettings() *SettingsResult {
 	}
 	sortField := cfg.SortField
 	if sortField == "" {
-		sortField = "updatedAt" // 兼容旧配置（无该字段）
+		sortField = "startedAt" // 默认排序：建立时间
 	}
 	sortDir := cfg.SortDir
 	if sortDir == "" {

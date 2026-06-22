@@ -60,6 +60,17 @@ powershell -Command "& '$(cygpath -w "$ISCC_EXE")' /DMyAppVersion=$VERSION setup
 
 echo ""
 echo "=== 6/7 处理更新发布元数据 ==="
+# release notes：取上一个版本 tag 到 HEAD 的提交标题（多 commit 按行展开），
+# 这是关于页「检查更新」要展示的具体更新内容；仓库尚无历史 tag 时退回 HEAD 单条，
+# 仍取不到时退回旧占位串。通过 jq --arg 传入，避免特殊字符破坏 JSON。
+PREV_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+if [ -n "$PREV_TAG" ]; then
+  RELEASE_NOTES="$(git log "$PREV_TAG..HEAD" --pretty=format:'%s' --no-merges)"
+else
+  RELEASE_NOTES="$(git log -1 --pretty=format:'%s')"
+fi
+RELEASE_NOTES="${RELEASE_NOTES:-Release v$VERSION}"
+
 if ! command -v minisign >/dev/null 2>&1; then
   if [ "$RELEASE_MODE" -eq 1 ]; then
     echo "缺少 minisign：发布构建必须先安装（示例: scoop install minisign）" >&2
@@ -92,9 +103,10 @@ PY
   jq -n \
     --arg ver "$VERSION" \
     --arg sig "$SIG" \
+    --arg notes "$RELEASE_NOTES" \
     --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{ version: $ver,
-       notes: ("Release v" + $ver),
+       notes: $notes,
        pub_date: $date,
        platforms: { "windows-x86_64": {
          signature: $sig,

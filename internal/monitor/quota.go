@@ -22,6 +22,8 @@ import (
 // Limit 表示 GLM 配额的一个限制项（5 小时 token 窗口或月度用量）。
 type Limit struct {
 	Type          string                   `json:"type"`                    // TOKENS_LIMIT | TIME_LIMIT
+	Unit          int                      `json:"unit,omitempty"`          // 时间单位代码（3=小时, 6=周, 5=月）
+	Number        int                      `json:"number,omitempty"`        // 数量（5 小时窗口为 5）
 	Percentage    int                      `json:"percentage"`              // 已用百分比
 	NextResetTime int64                    `json:"nextResetTime,omitempty"` // 下次重置时刻（epoch 毫秒）
 	CurrentValue  int64                    `json:"currentValue,omitempty"`  // 月度：当前用量
@@ -46,7 +48,8 @@ type AccountUsage struct {
 	FetchedAt int64    `json:"fetchedAt"`       // 抓取时刻（epoch 毫秒）
 	Error     string   `json:"error,omitempty"`  // 抓取失败的错误信息（前端 tooltip）
 	Level     string   `json:"level,omitempty"`  // GLM 账号等级
-	Tokens    *Limit   `json:"tokens,omitempty"` // GLM 5h token 窗口
+	Tokens    *Limit   `json:"tokens,omitempty"` // GLM 5h token 窗口（unit=3）
+	Weekly    *Limit   `json:"weekly,omitempty"` // GLM 周限额（unit=6）
 	Monthly   *Limit   `json:"monthly,omitempty"`
 	Balance   *Balance `json:"balance,omitempty"` // DeepSeek 余额
 }
@@ -167,7 +170,14 @@ func fetchGlm(baseHost, token string, now int64) *AccountUsage {
 		l := raw.Data.Limits[i]
 		switch l.Type {
 		case "TOKENS_LIMIT":
-			info.Tokens = &l
+			// 同一账号可能返回多个 TOKENS_LIMIT（5h 窗口 unit=3、周窗口 unit=6），
+			// 按 unit 分流到 Tokens / Weekly，避免后者覆盖前者。
+			switch l.Unit {
+			case 3:
+				info.Tokens = &l
+			case 6:
+				info.Weekly = &l
+			}
 		case "TIME_LIMIT":
 			info.Monthly = &l
 		}
