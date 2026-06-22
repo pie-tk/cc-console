@@ -310,38 +310,25 @@ async function pollBridgeStatus() {
 // ---- Stats ----
 function updateStats(stats) {
   const el = document.getElementById("stats");
-  const badge = document.getElementById("bridge-badge");
   if (!stats || stats.online === 0) {
     el.textContent = "🌙  当前无实例运行";
-    if (badge) badge.textContent = "";
     return;
   }
   const parts = ["在线 " + stats.online, "🔴 " + stats.busy + " 忙碌", "🟢 " + stats.idle + " 空闲"];
   if (stats.totalTokens > 0) parts.push("📦 " + formatTokens(stats.totalTokens) + " tokens");
   if (stats.stale > 0) parts.push("🌓 " + stats.stale + " 残留");
   el.textContent = parts.join("  ·  ");
-  // statusline 桥接接入徽标:让用户看到实时数据接入比例
-  if (badge) {
-    var hooked = stats.online - (stats.offline || 0);
-    if ((stats.offline || 0) > 0) {
-      badge.textContent = "📡 实时 " + hooked + "/" + stats.online + " · " + stats.offline + " 待接入";
-      badge.className = "bridge-badge warn";
-    } else {
-      badge.textContent = "📡 实时接入 " + hooked + "/" + stats.online;
-      badge.className = "bridge-badge";
-    }
-  }
 }
 
 // renderUsageBadge 渲染首页顶部账号用量徽标（账号级，随 refresh 每秒刷新，倒计时走）。
-// GLM → 「📊 N% · Xh」(hover 月度)；DeepSeek → 「💰 ¥X」(hover 赠送/充值)；其余隐藏。
+// GLM → 「📊 5h 配额 [进度条] N% · Xh」(hover 月度明细)；DeepSeek → 「💰 余额 ¥X」(hover 赠送/充值)；其余隐藏。
 function renderUsageBadge() {
   var el = document.getElementById("usage-badge");
   if (!el) return;
   var u = usageState;
   if (!u || !u.available || (u.provider !== "glm" && u.provider !== "deepseek")) {
     el.classList.add("hidden");
-    el.textContent = "";
+    el.innerHTML = "";
     return;
   }
   el.classList.remove("hidden");
@@ -349,13 +336,21 @@ function renderUsageBadge() {
     var t = u.tokens || {};
     var pct = t.percentage || 0;
     var cls = quotaBarClass(pct);
-    el.textContent = "📊 " + pct + "% · " + quotaCountdownShort(t.nextResetTime || 0);
-    el.title = quotaMonthlyTooltip(u);
-    el.className = "usage-badge" + (cls ? " " + cls : "");
-  } else {
-    el.textContent = "💰 " + balanceDisplay(u.balance);
-    el.title = balanceTooltip(u.balance);
+    var reset = quotaCountdownShort(t.nextResetTime || 0);
     el.className = "usage-badge";
+    el.innerHTML =
+      '<span class="usage-label">📊 5h 配额</span>' +
+      '<span class="usage-bar ctx-progress' + (cls ? " " + cls : "") + '">' +
+        '<span class="ctx-progress-track"><span class="ctx-progress-fill" style="width:' + Math.min(100, Math.max(0, pct)) + '%"></span></span>' +
+      '</span>' +
+      '<span class="usage-value' + (cls ? " " + cls : "") + '">' + pct + '%</span>' +
+      (reset ? '<span class="usage-reset">· ' + reset + '</span>' : '');
+  } else {
+    el.className = "usage-badge";
+    el.title = balanceTooltip(u.balance);
+    el.innerHTML =
+      '<span class="usage-label">💰 余额</span>' +
+      '<span class="usage-value">' + balanceDisplay(u.balance) + '</span>';
   }
 }
 
@@ -367,7 +362,7 @@ function quotaCountdownShort(nextResetMs) {
   var s = Math.floor(ms / 1000);
   var h = Math.floor(s / 3600);
   var m = Math.floor((s % 3600) / 60);
-  if (h > 0) return h + "h";
+  if (h > 0) return h + "h" + (m > 0 ? m + "m" : "");
   if (m > 0) return m + "m";
   return s + "s";
 }

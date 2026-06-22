@@ -272,7 +272,7 @@ type SettingsResult struct {
 }
 
 // Version 应用版本号。
-const Version = "1.4.3"
+const Version = "1.4.4"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {

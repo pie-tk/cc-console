@@ -112,28 +112,24 @@ body {
   color: var(--secondary-text);
 }
 
-/* statusline 桥接接入徽标 */
-.bridge-badge {
-  font-size: 9pt;
-  color: var(--status-idle);
-  margin-left: 8px;
-  white-space: nowrap;
-}
-.bridge-badge.warn { color: #d97706; font-weight: 500; }
-body.dark .bridge-badge.warn { color: #f59e0b; }
-
-/* 首页顶部账号用量徽标（GLM 配额 / DeepSeek 余额）；mid/high 按配额阈值变色 */
+/* 首页顶部账号用量徽标（GLM 配额 / DeepSeek 余额）：inline-flex 容器，
+   内含 标签 + 配额进度条 + 数值 + 倒计时；mid/high 仅作用于进度条 fill 与百分比数值，
+   复用 ctx-progress 形状与 context 配色，与卡片/chat-stats 进度条视觉一致。 */
 .usage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 9pt;
-  color: var(--status-idle);
+  color: var(--secondary-text);
   margin-left: 8px;
   white-space: nowrap;
   cursor: default;
 }
-.usage-badge.mid { color: #d97706; font-weight: 500; }
-.usage-badge.high { color: #dc2626; font-weight: 600; }
-body.dark .usage-badge.mid { color: #f59e0b; }
-body.dark .usage-badge.high { color: #f87171; }
+.usage-badge .ctx-progress-track { width: 56px; height: 6px; }
+.usage-reset { font-size: 8.5pt; color: var(--subtle-text); }
+.usage-value { font-weight: 500; color: var(--secondary-text); }
+.usage-value.mid { color: var(--context-mid); font-weight: 600; }
+.usage-value.high { color: var(--context-high); font-weight: 600; }
 
 .clock {
   font-family: "Cascadia Code", "Consolas", monospace;
