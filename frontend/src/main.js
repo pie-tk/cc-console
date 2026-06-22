@@ -3386,7 +3386,9 @@ function applyUpdateBadge(info) {
   var btn = document.getElementById('update-badge-btn');
   if (!btn) return;
   if (info) {
-    btn.textContent = '🆕 新版本 v' + (info.version || '');
+    // 图标按钮：不再塞文字，版本号走 title(hover 显示)；↑ 图标与红点固定在 HTML
+    btn.title = '发现新版本 v' + (info.version || '') + '，点击查看';
+    btn.setAttribute('aria-label', btn.title);
     btn.classList.remove('hidden');
   } else {
     btn.classList.add('hidden');

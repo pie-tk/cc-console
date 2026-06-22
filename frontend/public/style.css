@@ -134,8 +134,9 @@ body {
 
 .clock {
   font-family: "Cascadia Code", "Consolas", monospace;
-  font-size: 9pt;
-  color: var(--subtle-text);
+  font-size: 11pt;
+  color: var(--secondary-text);
+  white-space: nowrap;
 }
 
 .flex-spacer { flex: 1; }
@@ -712,24 +713,48 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .new-instance-btn:hover { opacity: 0.9; }
 .empty-new-btn { margin-top: 16px; padding: 8px 22px; font-size: 10pt; }
 
-/* 首页右上角「新版本可用」徽标（启动/自动检查发现新版本时显示） */
+/* 首页右上角「新版本可用」徽标：与设置齿轮同款幽灵图标按钮，
+   accent 描边 + 向上箭头(可升级)，右上角红点呼吸脉冲提示「有新通知」。
+   不放文字——版本号走 title(hover 显示)，图标与红点固定在 HTML。 */
 .update-badge-btn {
-  background: var(--accent);
-  color: #FFF;
+  position: relative;
+  background: var(--accent-soft);
   border: 1px solid var(--accent);
-  font-size: 9pt;
-  font-weight: 500;
+  color: var(--accent);
   font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
-  padding: 4px 10px;
+  padding: 3px 8px;
   margin-left: 10px;
   line-height: 1;
   border-radius: 6px;
-  transition: opacity 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
 }
-.update-badge-btn:hover { opacity: 0.9; }
+.update-badge-btn:hover {
+  background: var(--accent);
+  color: #FFF;
+  transform: translateY(-1px);
+}
+.update-badge-icon { line-height: 1; }
+/* 右上角红点角标：呼吸脉冲，提示有新通知 */
+.update-badge-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--context-high);
+  animation: update-badge-pulse 1.8s ease-in-out infinite;
+}
+@keyframes update-badge-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.35); opacity: 0.6; }
+}
 .update-badge-btn.hidden { display: none; }
 
 /* 最近目录快速选择面板 */
