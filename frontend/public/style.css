@@ -675,13 +675,15 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .settings-btn {
   background: none;
   border: 1px solid var(--card-border);
-  font-size: 18px;
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
   color: var(--subtle-text);
   cursor: pointer;
-  padding: 3px 7px;
+  padding: 0;
   margin-left: 10px;
   line-height: 1;
-  border-radius: 6px;
+  border-radius: 7px;
   transition: color 0.15s, background 0.15s, border-color 0.15s;
   display: inline-flex;
   align-items: center;
@@ -713,42 +715,42 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .new-instance-btn:hover { opacity: 0.9; }
 .empty-new-btn { margin-top: 16px; padding: 8px 22px; font-size: 10pt; }
 
-/* 首页右上角「新版本可用」徽标：与设置齿轮同款幽灵图标按钮，
-   accent 描边 + 向上箭头(可升级)，右上角红点呼吸脉冲提示「有新通知」。
-   不放文字——版本号走 title(hover 显示)，图标与红点固定在 HTML。 */
+/* 「新版本可用」徽标：置于标题「CC Console」右侧（title-row 内，gap 控制间距）。
+   accent 实色描边方形图标按钮 + 下载图标(SVG)，右上角红点带窗口背景色描边
+   光环(类 iOS 角标) + 呼吸脉冲。版本号走 title(hover 显示)。 */
 .update-badge-btn {
   position: relative;
+  width: 28px;
+  height: 28px;
   background: var(--accent-soft);
   border: 1px solid var(--accent);
   color: var(--accent);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 700;
   cursor: pointer;
-  padding: 3px 8px;
-  margin-left: 10px;
+  padding: 0;
   line-height: 1;
-  border-radius: 6px;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
+  border-radius: 7px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: background 0.15s, color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 .update-badge-btn:hover {
   background: var(--accent);
   color: #FFF;
   transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(35, 131, 226, 0.35);
 }
-.update-badge-icon { line-height: 1; }
-/* 右上角红点角标：呼吸脉冲，提示有新通知 */
+.update-badge-icon { display: block; }
+/* 右上角红点角标：呼吸脉冲；box-shadow 用窗口背景色描边，形成"挖空"光环 */
 .update-badge-dot {
   position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 7px;
-  height: 7px;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--context-high);
+  box-shadow: 0 0 0 1.5px var(--window-bg);
   animation: update-badge-pulse 1.8s ease-in-out infinite;
 }
 @keyframes update-badge-pulse {

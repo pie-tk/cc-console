@@ -13,6 +13,14 @@
       <div class="title-row">
         <span class="hero-emoji">📊</span>
         <h1 class="hero-title">CC Console</h1>
+        <button id="update-badge-btn" class="update-badge-btn hidden" title="发现新版本，点击查看" aria-label="发现新版本，点击查看" onclick="openAboutUpdate()">
+          <svg class="update-badge-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span class="update-badge-dot"></span>
+        </button>
       </div>
       <div class="spacer-8"></div>
       <div class="stats-row">
@@ -20,10 +28,6 @@
         <span id="usage-badge" class="usage-badge hidden"></span>
         <span class="flex-spacer"></span>
         <button id="new-instance-btn" class="new-instance-btn" title="新建 Claude Code 实例" onclick="openNewInstancePanel()">＋ 新建实例</button>
-        <button id="update-badge-btn" class="update-badge-btn hidden" title="发现新版本，点击查看" aria-label="发现新版本，点击查看" onclick="openAboutUpdate()">
-          <span class="update-badge-icon">↑</span>
-          <span class="update-badge-dot"></span>
-        </button>
         <button id="settings-btn" class="settings-btn" title="设置" onclick="showSettings()">&#x2699;</button>
       </div>
     </header>
