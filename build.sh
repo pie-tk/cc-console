@@ -92,14 +92,11 @@ elif [ -f "$MINISIGN_KEY_LOCAL" ]; then
   echo "=== 7/7 生成 latest.json manifest ==="
   # manifest 内嵌两行主签名（untrusted comment + 文件签名），兼容已发布客户端；
   # 完整四行 .minisig 仍作为独立 release asset 上传，供外部验证工具使用。
-  SIG="$(python - <<'PY'
-from pathlib import Path
-lines = Path('cc-console-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
-if len(lines) < 2:
-    raise SystemExit('invalid minisign file')
-print('\n'.join(lines[:2]), end='')
-PY
-)"
+  # 取 minisig 前两行（untrusted comment + 签名）作为 manifest 内嵌签名。
+  # tr -d '\r' 去掉 Windows CRLF 行尾，保持与 minisign 标准（纯 LF）一致。
+  # 用 shell 而非 python：Windows 上 python 常被 Store「应用执行别名」拦截，
+  # 导致 build.sh --release 在签名后静默卡死、latest.json 不生成。
+  SIG="$(head -2 cc-console-setup.exe.minisig | tr -d '\r')"
   jq -n \
     --arg ver "$VERSION" \
     --arg sig "$SIG" \
@@ -124,14 +121,11 @@ elif [ -f "$MINISIGN_KEY" ]; then
     echo "=== 7/7 生成 latest.json manifest ==="
     # manifest 内嵌两行主签名（untrusted comment + 文件签名），兼容已发布客户端；
     # 完整四行 .minisig 仍作为独立 release asset 上传，供外部验证工具使用。
-    SIG="$(python - <<'PY'
-from pathlib import Path
-lines = Path('cc-console-setup.exe.minisig').read_text(encoding='utf-8').splitlines()
-if len(lines) < 2:
-    raise SystemExit('invalid minisign file')
-print('\n'.join(lines[:2]), end='')
-PY
-)"
+    # 取 minisig 前两行（untrusted comment + 签名）作为 manifest 内嵌签名。
+  # tr -d '\r' 去掉 Windows CRLF 行尾，保持与 minisign 标准（纯 LF）一致。
+  # 用 shell 而非 python：Windows 上 python 常被 Store「应用执行别名」拦截，
+  # 导致 build.sh --release 在签名后静默卡死、latest.json 不生成。
+  SIG="$(head -2 cc-console-setup.exe.minisig | tr -d '\r')"
     jq -n \
       --arg ver "$VERSION" \
       --arg sig "$SIG" \
