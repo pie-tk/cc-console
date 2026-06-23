@@ -452,6 +452,7 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 						Role:    "tool_result",
 						Content: b.content,
 						ToolID:  b.toolUseID,
+						IsError: b.isError,
 						Turn:    turn,
 						Ts:      ts,
 					})
@@ -476,6 +477,7 @@ type contentBlock struct {
 	text      string
 	toolUseID string
 	content   string // tool_result 的实际内容
+	isError   bool   // tool_result 是否出错（is_error 字段）
 }
 
 // parseContentBlocks 解析 user 消息的 content（可能是字符串或数组）。
@@ -500,6 +502,7 @@ func parseContentBlocks(raw json.RawMessage) []contentBlock {
 		Text      string          `json:"text"`
 		ToolUseID string          `json:"tool_use_id"`
 		Content   json.RawMessage `json:"content"`
+		IsError   bool            `json:"is_error"`
 	}
 	if json.Unmarshal(raw, &items) != nil {
 		return nil
@@ -517,6 +520,7 @@ func parseContentBlocks(raw json.RawMessage) []contentBlock {
 			blocks = append(blocks, contentBlock{
 				toolUseID: item.ToolUseID,
 				content:   content,
+				isError:   item.IsError,
 			})
 		}
 	}

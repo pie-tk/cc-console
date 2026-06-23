@@ -191,8 +191,8 @@ function updateSendHints() {
   var sub = document.getElementById("prompt-subtitle");
   if (sub) {
     sub.textContent = sendOnEnter
-      ? "输入文字后点击 发送 ⏎ 或按 Enter。多行会被折叠为空格。"
-      : "输入文字后点击 发送 ⏎ 或按 Shift+Enter。多行会被折叠为空格。";
+      ? "输入文字后点击 发送 或按 Enter。多行会被折叠为空格。"
+      : "输入文字后点击 发送 或按 Shift+Enter。多行会被折叠为空格。";
   }
 }
 
@@ -922,11 +922,8 @@ function renderToolCallBody(tool, rawContent, startLine) {
     return '<div class="chat-msg-tool-input">' + escHtml(rawContent) + '</div>';
   }
 
-  // 文件路径头部
+  // 文件路径已在卡片头部展示，body 不再重复
   var html = '';
-  if (input.file_path) {
-    html += '<div class="tool-edit-file">📄 ' + escHtml(input.file_path) + '</div>';
-  }
 
   // Write 工具：新建/覆盖整个文件，不直接平铺全部内容，给出提示并可折叠查看
   if (tool === 'Write' && input.content) {
@@ -959,6 +956,141 @@ function renderToolCallBody(tool, rawContent, startLine) {
       + '<span class="diff-ct">' + sign + ' ' + escHtml(ch.text || ' ') + '</span></div>';
   }
   html += '<div class="tool-edit-diff' + (startLine ? ' has-linenr' : '') + '">' + diff + '</div>';
+  return html;
+}
+
+// ---- 工具调用卡片（Claude Code 风格：调用+结果合并为一个可折叠卡片）----
+// 参考 Claude Code 终端：⏺ 工具名(关键参数) 头部 + ⎿ 结果摘要 + 可展开完整内容。
+
+// toolKeyInfo 按工具名从已解析的 input 提取头部展示信息，返回 {param, path}。
+// param 为主参数（括号内展示）；path 为完整路径（独立一行展示，仅路径类工具有）。
+// 路径完整保留（不去 basename），文本类参数过长截断到 100 字符。
+function toolKeyInfo(tool, input) {
+  if (!input) return { param: '', path: '' };
+  function clip(s, n) {
+    s = String(s == null ? '' : s).replace(/[\r\n]+/g, ' ').trim();
+    return s.length > n ? s.slice(0, n) + '…' : s;
+  }
+  function full(p) { return String(p == null ? '' : p).trim(); }
+  switch (tool) {
+  case 'Read':
+    var rfp = full(input.file_path);
+    if (input.offset) rfp += ':' + input.offset;
+    return { param: rfp, path: '' };
+  case 'Write':
+  case 'Edit':
+  case 'NotebookEdit':
+    return { param: full(input.file_path), path: '' };
+  case 'Bash':
+    return { param: clip(input.command, 100), path: '' };
+  case 'Grep':
+    return { param: clip(input.pattern, 100), path: full(input.path) };
+  case 'Glob':
+    return { param: clip(input.pattern, 100), path: full(input.path) };
+  case 'Agent':
+    return { param: clip(input.description, 100), path: '' };
+  case 'WebSearch':
+    return { param: clip(input.query, 100), path: '' };
+  case 'TaskCreate':
+    return { param: clip(input.subject, 100), path: '' };
+  case 'TaskUpdate':
+    return { param: input.taskId ? ('#' + input.taskId + (input.status ? ' → ' + input.status : '')) : '', path: '' };
+  case 'Skill':
+    return { param: clip(input.skill, 100), path: '' };
+  default:
+    return { param: '', path: '' };
+  }
+}
+
+// resultSummary 由工具名 + 结果内容生成一行语义摘要，返回 {text, ok}。
+// ok=false 表示失败（红色 ✗）。复刻 Claude Code 的 ⎿ Read N lines / Found N results 风格。
+function resultSummary(tool, content, isError) {
+  content = content || '';
+  if (isError) {
+    var first = (content.split('\n')[0] || '失败').trim();
+    return { text: '✗ ' + (first || '失败'), ok: false };
+  }
+  var arr = content.replace(/\r/g, '').split('\n');
+  var nonEmpty = 0;
+  for (var i = 0; i < arr.length; i++) if (arr[i].trim()) nonEmpty++;
+  function lastNonEmpty() {
+    for (var j = arr.length - 1; j >= 0; j--) {
+      if (arr[j].trim()) return arr[j].slice(0, 60);
+    }
+    return '';
+  }
+  switch (tool) {
+  case 'Read':
+    return { text: nonEmpty > 0 ? ('Read ' + nonEmpty + ' lines') : 'Empty', ok: true };
+  case 'Grep':
+  case 'Glob':
+    return { text: nonEmpty > 0 ? ('Found ' + nonEmpty + ' results') : 'No results', ok: true };
+  case 'Bash':
+    var em = /Exit code (\d+)/.exec(content);
+    if (em) return { text: '✗ Exit ' + em[1], ok: false };
+    return { text: lastNonEmpty() || '(no output)', ok: true };
+  case 'Write':
+    return { text: 'Written', ok: true };
+  case 'Edit':
+    return { text: 'Updated', ok: true };
+  case 'Agent':
+    return { text: 'Completed', ok: true };
+  default:
+    return { text: (arr[0] || '').slice(0, 60) || '(empty)', ok: true };
+  }
+}
+
+// renderToolCard 渲染「调用 + 结果」合并卡片。toolUse 必填；result 为配对的 tool_result，
+// 为 null 表示挂起中（AskUserQuestion / 权限请求 / 执行中）。
+// Edit/Write 复用 renderToolCallBody 的 diff 视图；其余工具折叠 input 全文。
+function renderToolCard(toolUse, result) {
+  var tool = toolUse.tool || 'tool';
+  var rawInput = toolUse.content || '';
+  var input = null;
+  try { input = JSON.parse(rawInput); } catch (e) { input = null; }
+  var info = toolKeyInfo(tool, input);
+
+  var html = '<div class="chat-msg chat-tool-card">';
+  // 头部：⏺ 工具名(主参数) + 完整路径（路径类工具独占一行）
+  html += '<div class="chat-tool-head">'
+    + '<span class="chat-tool-dot">⏺</span>'
+    + '<span class="chat-tool-name">' + escHtml(tool) + '</span>'
+    + (info.param ? '<span class="chat-tool-param">(' + escHtml(info.param) + ')</span>' : '')
+    + (info.path ? '<span class="chat-tool-path">' + escHtml(info.path) + '</span>' : '')
+    + '</div>';
+
+  // 主体：Edit/Write 走 diff；其他折叠 input 全文
+  if (tool === 'Edit' || tool === 'Write') {
+    html += renderToolCallBody(tool, rawInput, toolUse.editStartLine || 0);
+  } else if (rawInput) {
+    html += '<details class="chat-tool-input-expand"><summary>查看调用参数</summary>'
+      + '<pre class="chat-tool-input-pre">' + escHtml(rawInput) + '</pre></details>';
+  }
+
+  // 结果区
+  if (result) {
+    var rc = result.content || '';
+    var sum = resultSummary(tool, rc, !!result.isError);
+    html += '<div class="chat-tool-result ' + (sum.ok ? 'ok' : 'err') + '">'
+      + '<span class="chat-tool-result-mark">⎿</span>'
+      + '<span class="chat-tool-result-text">' + escHtml(sum.text) + '</span>'
+      + '</div>';
+    // 长结果折叠完整内容（短结果摘要已足够，不重复展示）
+    var lines = rc.replace(/\r/g, '').split('\n').filter(function (l) { return l.trim(); }).length;
+    if (rc.trim() && (lines > 1 || rc.length > 120)) {
+      var full = rc.length > 6000 ? rc.slice(0, 6000) + '\n... (结果过长，已截断)' : rc;
+      html += '<details class="chat-tool-result-detail"><summary>查看完整结果</summary>'
+        + '<div class="chat-tool-result-full">' + formatRichContent(full) + '</div></details>';
+    }
+  } else {
+    // 无配对结果：挂起中（等待用户选择 / 工具执行中）
+    html += '<div class="chat-tool-result pending">'
+      + '<span class="chat-tool-result-mark">⎿</span>'
+      + '<span class="chat-tool-result-text">⏳ 等待中…</span>'
+      + '</div>';
+  }
+
+  html += '</div>';
   return html;
 }
 
@@ -1037,8 +1169,9 @@ function renderMarkdown(text) {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>');
 
-  // 链接 [text](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 链接 [text](url) —— 不用 target="_blank"（会在 WebView2 内弹窗），点击由
+  // .chat-body 上的事件委托拦截，转交 OpenURL 用系统默认浏览器打开。
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" rel="noopener">$1</a>');
 
   // 逐行处理块级元素，构建为单个字符串避免 out.join 引入多余 \n
   var lines = html.split('\n');
@@ -1388,25 +1521,17 @@ function outputDisplay(inst) {
 }
 
 function totalTokensDisplay(inst) {
-  // 桥接实时实例:显示费用/时长(活跃会话 jsonl 未落盘,用 statusline cost)
-  if (inst.bridgeConnected) {
-    var parts = [];
-    if (inst.costUsd > 0) parts.push("$" + inst.costUsd.toFixed(2));
-    if (inst.durationMs > 0) parts.push(formatDuration(inst.durationMs));
-    if (parts.length) return parts.join(" · ");
-  }
-  if (!inst.hasConversation) return "";
+  // 只显示 token 明细(in/out/cache,来自 jsonl);无累计数据时显示横杠
   var tin = inst.totalInputTokens || 0;
   var tout = inst.totalOutputTokens || 0;
   var tcache = inst.totalCacheTokens || 0;
   var total = tin + tout + tcache;
-  if (total <= 0) return "";
+  if (total <= 0) return "—";
   return formatTokens(total) + " (in: " + formatTokens(tin) + ", out: " + formatTokens(tout) + ", cache: " + formatTokens(tcache) + ")";
 }
 
-// chatTokensDisplay 用于聊天面板底部 Tokens 信息:优先显示累计 token 明细(in/out/cache,
-// 来自 jsonl),仅当无累计数据时(活跃会话 jsonl 未落盘)才回退到费用/时长。
-// 与卡片的 totalTokensDisplay 相反——后者对桥接实例优先显示费用/时长,这里优先 token 明细。
+// chatTokensDisplay 用于聊天面板底部 Tokens 信息:显示累计 token 明细(in/out/cache,
+// 来自 jsonl),无累计数据时显示横杠。
 function chatTokensDisplay(inst) {
   var tin = inst.totalInputTokens || 0;
   var tout = inst.totalOutputTokens || 0;
@@ -1415,10 +1540,7 @@ function chatTokensDisplay(inst) {
   if (total > 0) {
     return formatTokens(total) + " (in: " + formatTokens(tin) + ", out: " + formatTokens(tout) + ", cache: " + formatTokens(tcache) + ")";
   }
-  var parts = [];
-  if (inst.costUsd > 0) parts.push("$" + inst.costUsd.toFixed(2));
-  if (inst.durationMs > 0) parts.push(formatDuration(inst.durationMs));
-  return parts.join(" · ");
+  return "—";
 }
 
 // ---- 主题行右侧：会话动态信息 ----
@@ -1497,7 +1619,8 @@ function quotaBarClass(pct) {
   return "high";
 }
 
-// quotaCountdownText 把下次重置时刻格式化为倒计时文案（每秒随 renderChatStats 刷新）。
+// quotaCountdownText 把下次重置时刻格式化为紧凑倒计时文案（每秒随 renderChatStats 刷新）。
+// 不带「后重置」后缀、单位间无空格，并支持天（周限额倒计时可达数天）。5h 与周限额共用。
 function quotaCountdownText(nextResetMs) {
   if (!nextResetMs) return "";
   var ms = nextResetMs - Date.now();
@@ -1505,24 +1628,14 @@ function quotaCountdownText(nextResetMs) {
   var s = Math.floor(ms / 1000);
   var h = Math.floor(s / 3600); s -= h * 3600;
   var m = Math.floor(s / 60); s -= m * 60;
-  if (h > 0) return h + "h " + m + "m 后重置";
-  if (m > 0) return m + "m " + s + "s 后重置";
-  return s + "s 后重置";
-}
-
-// quotaMonthlyTooltip 拼接月度配额 tooltip（挂在百分比元素 title，不占主行空间）。
-function quotaMonthlyTooltip(q) {
-  var parts = [];
-  if (q.level) parts.push(q.level);
-  var mo = q.monthly;
-  if (mo) {
-    var seg = "月度 " + (mo.percentage || 0) + "%";
-    if (mo.usage > 0) {
-      seg += " (" + (mo.currentValue || 0) + "/" + mo.usage + (mo.remaining > 0 ? ", 剩 " + mo.remaining : "") + ")";
-    }
-    parts.push(seg);
+  if (h >= 24) {
+    var d = Math.floor(h / 24);
+    var rh = h % 24;
+    return d + "d" + (rh > 0 ? rh + "h" : "");
   }
-  return parts.join(" · ");
+  if (h > 0) return h + "h" + m + "m";
+  if (m > 0) return m + "m" + s + "s";
+  return s + "s";
 }
 
 // renderQuotaBar 就地更新配额胶囊条，复用 ctx-progress 形状/配色（CSS 仅缩窄尺寸）。
@@ -1979,10 +2092,10 @@ function renderChatStats(pid) {
   var detailEl = document.getElementById("chat-ctx-detail");
   if (detailEl) { detailEl.textContent = contextDetail(inst); detailEl.className = "context-detail " + ctxCls; }
 
-  // tokens：累计 token 总量及 in/out/cache 明细（无累计数据时回退费用/时长，再无则 —）
+  // tokens：累计 token 总量及 in/out/cache 明细（无累计数据时显示 —）
   var tokensEl = document.getElementById("chat-tokens");
   if (tokensEl) {
-    tokensEl.textContent = chatTokensDisplay(inst) || "—";
+    tokensEl.textContent = chatTokensDisplay(inst);
   }
 
   // 分支：每秒刷新，跟随用户在其他终端的分支切换
@@ -2025,6 +2138,9 @@ function renderChatStats(pid) {
   var barEl = document.getElementById("chat-quota-bar");
   var pctEl = document.getElementById("chat-quota-pct");
   var resetEl = document.getElementById("chat-quota-reset");
+  var weeklyEl = document.getElementById("chat-quota-weekly");
+  var weeklyPctEl = document.getElementById("chat-weekly-pct");
+  var weeklyResetEl = document.getElementById("chat-weekly-reset");
   var u = usageState;
   var show = u && u.available && (u.provider === "glm" || u.provider === "deepseek");
   if (!show) {
@@ -2039,12 +2155,24 @@ function renderChatStats(pid) {
       var pct = t.percentage || 0;
       var cls = quotaBarClass(pct);
       renderQuotaBar(barEl, pct, cls);
-      if (pctEl) { pctEl.textContent = pct + "%"; pctEl.className = "context-pct " + cls; pctEl.title = quotaMonthlyTooltip(u); }
+      if (pctEl) { pctEl.textContent = pct + "%"; pctEl.className = "context-pct " + cls; }
       if (resetEl) resetEl.textContent = quotaCountdownText(t.nextResetTime || 0);
+      // 周限额：仅「周 百分比 重置时间」，无进度条
+      var w = u.weekly;
+      if (w && weeklyEl) {
+        var wpct = w.percentage || 0;
+        var wcls = quotaBarClass(wpct);
+        weeklyEl.style.display = "";
+        if (weeklyPctEl) { weeklyPctEl.textContent = wpct + "%"; weeklyPctEl.className = "context-pct " + wcls; }
+        if (weeklyResetEl) weeklyResetEl.textContent = quotaCountdownText(w.nextResetTime || 0);
+      } else if (weeklyEl) {
+        weeklyEl.style.display = "none";
+      }
     } else if (u.provider === "deepseek") {
       if (labelEl) labelEl.textContent = "余额";
       if (barEl) barEl.style.display = "none";    // 余额不显示配额胶囊
       if (resetEl) resetEl.style.display = "none"; // 余额没有重置概念
+      if (weeklyEl) weeklyEl.style.display = "none"; // 余额无周限额
       if (pctEl) {
         pctEl.textContent = balanceDisplay(u.balance);
         pctEl.className = "context-pct";          // 余额态去掉 mid/high 配色
@@ -2156,6 +2284,14 @@ function isChatNearBottom() {
 function renderChatMessages(messages) {
   lastChatMessages = messages || [];
   var container = document.getElementById("chat-messages");
+  // 建 toolId → tool_result 索引：tool_use 渲染时把配对的 result 合并进同一卡片
+  var resultByToolId = {};
+  for (var p = 0; p < messages.length; p++) {
+    if (messages[p].role === 'tool_result' && messages[p].toolId) {
+      resultByToolId[messages[p].toolId] = messages[p];
+    }
+  }
+  var consumedToolIds = {}; // 已被 tool_use 卡片消费的 result，轮到它时跳过
   var html = '';
   for (var i = 0; i < messages.length; i++) {
     var m = messages[i];
@@ -2178,16 +2314,17 @@ function renderChatMessages(messages) {
         + '</div>';
       break;
     case 'tool_use':
-      html += '<div class="chat-msg chat-msg-tool">'
-        + '<span class="chat-msg-label">🔧 调用工具: ' + escHtml(m.tool || '') + '</span>'
-        + renderToolCallBody(m.tool, m.content || '', m.editStartLine || 0)
-        + '</div>';
+      var matched = (m.toolId && resultByToolId[m.toolId]) ? resultByToolId[m.toolId] : null;
+      if (matched) consumedToolIds[m.toolId] = true;
+      html += renderToolCard(m, matched);
       break;
     case 'tool_result':
+      // 已被 tool_use 卡片消费 → 跳过；孤儿（无对应 tool_use）→ 回退独立气泡兜底
+      if (m.toolId && consumedToolIds[m.toolId]) break;
       var rt = m.content || '';
       if (rt.length > 6000) rt = rt.slice(0, 6000) + '\n... (结果过长，已截断)';
       html += '<div class="chat-msg chat-msg-tool-result">'
-        + '<span class="chat-msg-label">📋 工具结果' + (m.toolId ? ' (' + escHtml(m.toolId) + ')' : '') + '</span>'
+        + '<span class="chat-msg-label">📋 工具结果' + (m.isError ? ' · 失败' : '') + '</span>'
         + formatRichContent(rt)
         + '</div>';
       break;
@@ -2254,7 +2391,7 @@ window.sendChatMessage = async function() {
     alert("发送失败: " + (e && e.message ? e.message : e));
   }
   btn.disabled = false;
-  btn.textContent = "发送 ⏎";
+  btn.textContent = "发送";
 };
 
 // ---- Interactive Chat: quick-reply & waiting indicator ----
@@ -2700,7 +2837,7 @@ window.sendQuickReply = async function(value, kind) {
   try {
     var optimisticText = String(value);
     if (kind === 'ask') {
-      // 单选:value = optionIndex。当前题只发数字键作答;若这是最后一题,再补最终确认页的 1 + Enter。
+      // 单选:value = optionIndex。当前题只发数字键作答;若这是最后一题,再补最终确认页的 ↓ + Enter。
       var cur = currentAskQuestion();
       var isLastQuestion = askToolUseId && askQuestionIndex === askQuestionCount - 1;
       var seq = buildAskSequence({
@@ -2714,7 +2851,7 @@ window.sendQuickReply = async function(value, kind) {
       await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify(seq));
       if (isLastQuestion) {
         await new Promise(function(resolve) { setTimeout(resolve, 200); });
-        await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ text: '1' }]));
+        await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'down' }]));
         await new Promise(function(resolve) { setTimeout(resolve, 80); });
         await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
       }
@@ -2767,10 +2904,10 @@ window.submitMultiSelect = async function() {
     //   1. Submit answers
     //   2. Cancel
     // 这里不能盲目对所有多选多发回车,否则在非最后一题会误伤下一题默认项。
-    // 仅当当前题是最后一题时,等待确认页渲染后自动发 "1" + 回车完成最终提交。
+    // 仅当当前题是最后一题时,等待确认页渲染后自动发 ↓ + 回车完成最终提交。
     if (isLastQuestion) {
       await new Promise(function(resolve) { setTimeout(resolve, 200); });
-      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ text: '1' }]));
+      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'down' }]));
       await new Promise(function(resolve) { setTimeout(resolve, 80); });
       await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
     }
@@ -3548,3 +3685,53 @@ document.getElementById("update-check-btn").addEventListener("click", function()
 document.getElementById("update-download-btn").addEventListener("click", function() {
   window.downloadUpdate();
 });
+
+// 会话消息中的链接 → 用系统默认浏览器打开，而非在 WebView2 内部导航/弹窗。
+// .chat-body 不随消息重渲染重建，绑定一次即可覆盖所有动态渲染出的 <a>。
+document.querySelector(".chat-body").addEventListener("click", function(e) {
+  var a = e.target.closest("a");
+  if (!a) return;
+  var href = a.getAttribute("href") || "";
+  if (/^https?:\/\//i.test(href)) {
+    e.preventDefault();
+    Call.ByID(ID_OPEN_URL, href).catch(function(err) {
+      flashFoot("打开链接失败: " + (err && err.message ? err.message : err));
+    });
+  }
+});
+
+// 「回到底部」按钮：消息列表不在底部时浮现，点击平滑滚到底。
+// scroll 高频触发，用 rAF 合并；复用 isChatNearBottom 的「近底」判定（< 80px 视为已到底）。
+(function setupChatScrollBtn() {
+  var body = document.querySelector(".chat-body");
+  var btn = document.getElementById("chat-scroll-btn");
+  if (!body || !btn) return;
+  var ticking = false;
+  function update() {
+    ticking = false;
+    btn.classList.toggle("visible", !isChatNearBottom());
+  }
+  body.addEventListener("scroll", function() {
+    if (!ticking) { ticking = true; requestAnimationFrame(update); }
+  }, { passive: true });
+  // 自定义平滑滚动：原生 behavior:"smooth" 时长由浏览器决定且偏慢（长距离尤甚），
+  // 改用 easeOutCubic 固定 ~280ms，点击后能更快归底。
+  function scrollToBottom() {
+    var startTop = body.scrollTop;
+    var endTop = body.scrollHeight - body.clientHeight;
+    var distance = endTop - startTop;
+    if (distance <= 0) { body.scrollTop = endTop; return; }
+    var startTime = 0;
+    function step(ts) {
+      if (!startTime) startTime = ts;
+      var p = Math.min(1, (ts - startTime) / 280);
+      body.scrollTop = startTop + distance * (1 - Math.pow(1 - p, 3));
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+  btn.addEventListener("click", function() {
+    scrollToBottom();
+    btn.classList.remove("visible");
+  });
+})();

@@ -50,8 +50,8 @@ func runWailsApp() {
 	geo := monitor.GetWindowGeometry()
 	winOpts := application.WebviewWindowOptions{
 		Title:            "CC Console",
-		Width:            1040,
-		Height:           680,
+		Width:            1442,
+		Height:           960,
 		MinWidth:         660,
 		MinHeight:        420,
 		BackgroundColour: application.NewRGB(255, 255, 255),

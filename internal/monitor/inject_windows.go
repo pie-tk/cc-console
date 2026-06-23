@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -19,6 +20,12 @@ func init() {
 }
 
 type windowsInjector struct{}
+
+// consoleMu 串行化控制台附加/写入全流程。
+// AttachConsole/FreeConsole/WriteConsoleInput 操作的是进程级全局控制台状态，
+// 不是线程局部的：SendPrompt 主调用与 autoConfirmModelSwitch 后台重试可能并发，
+// 不加锁会互相 Free 掉对方刚 Attach 的控制台，令句柄失效（ERROR_INVALID_HANDLE）。
+var consoleMu sync.Mutex
 
 // ---- Win32 DLL 声明 ----
 
@@ -167,19 +174,29 @@ func sendInputRecords(pid uint32, recs []inputRecord) error {
 		return nil
 	}
 
+	consoleMu.Lock()
+	defer consoleMu.Unlock()
+
 	// 先尝试 detach（自身无控制台时为无害空操作），避免因「已附属控制台」而失败。
 	_, _, _ = procFreeConsole.Call()
 
-	r, _, _ := procAttachConsole.Call(uintptr(pid))
+	r, _, attachErr := procAttachConsole.Call(uintptr(pid))
 	if r == 0 {
-		return fmt.Errorf("无法附加到该实例的控制台（PID %d）。\n请确认它在普通终端窗口里运行；经管道/重定向启动的实例不支持", pid)
+		return fmt.Errorf("无法附加到该实例的控制台（PID %d，错误 %v）。\n请确认它在普通终端窗口里运行；经管道/重定向启动的实例不支持", pid, attachErr)
 	}
 	defer func() { _, _, _ = procFreeConsole.Call() }()
 
-	h, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
-	if err != nil || h == 0 {
-		return fmt.Errorf("GetStdHandle 失败: %v", err)
+	// 用 CONIN$ 设备名打开当前附加控制台的输入缓冲区，而非 GetStdHandle(STD_INPUT_HANDLE)。
+	// cc-console 是 windowsgui 子系统程序，启动时没有标准控制台句柄，STDIN 表项指向
+	// null device（非 NULL）。AttachConsole 成功后 Windows 只在表项为 NULL 时才填充它，
+	// 于是 GetStdHandle 返回的是 null device 句柄——非零（骗过 h==0 检查）但不是控制台
+	// 输入缓冲区，WriteConsoleInput 拿到它就报 ERROR_INVALID_HANDLE("The handle is invalid")。
+	// CONIN$ 直接解析到「当前附加控制台」的输入缓冲区，始终可靠。该句柄需自行 Close。
+	h, err := openConsoleInput()
+	if err != nil || h == 0 || h == windows.InvalidHandle {
+		return fmt.Errorf("打开控制台输入缓冲区失败: %v", err)
 	}
+	defer windows.CloseHandle(h)
 
 	// 控制台输入缓冲区容量有限，且中文等宽字符目标进程消费较慢。
 	// 若一次性写入过多记录，末尾记录（往往是回车）会被挤掉，
@@ -217,6 +234,21 @@ func sendInputRecords(pid uint32, recs []inputRecord) error {
 		}
 	}
 	return nil
+}
+
+// openConsoleInput 打开「当前进程所附加控制台」的输入缓冲区句柄（CONIN$）。
+// 用设备名而非 GetStdHandle，原因见 sendInputRecords 注释。调用方负责 CloseHandle。
+func openConsoleInput() (windows.Handle, error) {
+	name, _ := windows.UTF16PtrFromString("CONIN$")
+	return windows.CreateFile(
+		name,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.OPEN_EXISTING,
+		0,
+		0,
+	)
 }
 
 // ---- ConsoleInput 接口实现 ----

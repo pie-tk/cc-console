@@ -83,9 +83,12 @@ body {
   gap: 12px;
 }
 
+/* Hero 图标：监控显示器（屏幕 + 底座 + 屏幕后半透明圆），accent 主色，跟随主题 */
 .hero-emoji {
-  font-size: 22pt;
-  line-height: 1;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: var(--accent);
 }
 
 .hero-title {
@@ -677,17 +680,18 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   border: 1px solid var(--card-border);
   width: 28px;
   height: 28px;
-  font-size: 16px;
   color: var(--subtle-text);
   cursor: pointer;
   padding: 0;
   margin-left: 10px;
-  line-height: 1;
   border-radius: 7px;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+.settings-btn-icon {
+  display: block;
 }
 .settings-btn:hover {
   color: var(--window-text);
@@ -1204,6 +1208,16 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 }
 .chat-close-btn:hover { color: var(--secondary-text); background: var(--card-hover-bg); }
 
+/* Chat body 外层包裹：承载滚动区与浮动的「回到底部」按钮。
+   flex:1 + min-height:0 让内部 .chat-body 可滚动；position:relative 给按钮做定位基准。 */
+.chat-scroll-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Chat body */
 .chat-body {
   flex: 1;
@@ -1215,6 +1229,38 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 .chat-body::-webkit-scrollbar { width: 5px; }
 .chat-body::-webkit-scrollbar-track { background: transparent; }
 .chat-body::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+
+/* 「回到底部」浮动按钮：默认透明且不响应点击，加 .visible 才浮现 */
+.chat-scroll-btn {
+  position: absolute;
+  right: 24px;
+  bottom: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--card-border);
+  background: var(--window-bg);
+  color: var(--secondary-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease, background 0.15s, color 0.15s;
+  z-index: 5;
+}
+.chat-scroll-btn.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.chat-scroll-btn:hover {
+  background: var(--card-hover-bg);
+  color: var(--accent);
+}
 
 .chat-messages {
   display: flex;
@@ -1335,6 +1381,112 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   max-height: 5.2em;       /* 约 3 行，超出滚动 */
   overflow-y: auto;
   color: var(--secondary-text);
+}
+
+/* ===== 工具调用卡片（Claude Code 风格：调用+结果合并为一个可折叠卡片） =====
+   ⏺ 工具名(关键参数) 头部 + ⎿ 结果摘要（ok/err 配色）+ 可展开的完整内容。
+   卡片占满消息区宽度，与左右文本气泡区分，贴近终端全宽工具行观感。 */
+.chat-tool-card {
+  align-self: stretch;
+  background: var(--panel-bg);
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 9pt;
+}
+.chat-tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.chat-tool-dot {
+  color: var(--accent);
+  line-height: 1;
+}
+.chat-tool-name {
+  font-weight: 600;
+  color: var(--accent);
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+.chat-tool-param {
+  color: var(--secondary-text);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8.5pt;
+  word-break: break-all;
+}
+/* 完整路径（Grep/Glob 等）：独占一行，完整展示不截断 */
+.chat-tool-path {
+  flex-basis: 100%;
+  color: var(--secondary-text);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8pt;
+  word-break: break-all;
+  opacity: 0.85;
+}
+/* 折叠的调用参数 / 完整结果：复用 ▸/▾ 三角标记 */
+.chat-tool-input-expand,
+.chat-tool-result-detail {
+  margin-top: 4px;
+}
+.chat-tool-input-expand > summary,
+.chat-tool-result-detail > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 8pt;
+  list-style: none;
+  user-select: none;
+  opacity: 0.85;
+}
+.chat-tool-input-expand > summary::-webkit-details-marker,
+.chat-tool-result-detail > summary::-webkit-details-marker { display: none; }
+.chat-tool-input-expand > summary::before,
+.chat-tool-result-detail > summary::before { content: "▸ "; }
+.chat-tool-input-expand[open] > summary::before,
+.chat-tool-result-detail[open] > summary::before { content: "▾ "; }
+.chat-tool-input-pre {
+  background: var(--card-bg);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 4px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 8pt;
+  line-height: 1.5;
+}
+/* 结果摘要行：⎿ + 文本，按成功/失败/等待配色 */
+.chat-tool-result {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 5px;
+  padding-left: 2px;
+  font-size: 8.5pt;
+}
+.chat-tool-result-mark {
+  color: var(--subtle-text);
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+.chat-tool-result-text { word-break: break-all; }
+.chat-tool-result.ok .chat-tool-result-text { color: var(--secondary-text); }
+.chat-tool-result.err .chat-tool-result-text { color: #D44C47; font-weight: 600; }
+body.dark .chat-tool-result.err .chat-tool-result-text { color: #FF7369; }
+.chat-tool-result.pending .chat-tool-result-text { color: var(--subtle-text); font-style: italic; }
+/* 折叠的完整结果正文 */
+.chat-tool-result-full {
+  background: var(--card-bg);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 4px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 8pt;
+  line-height: 1.5;
 }
 
 /* Message role label */
@@ -1463,6 +1615,8 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
 /* 聊天面板配额分组：复用 ctx-progress 形状/配色，仅缩窄腾位；倒计时文本次要色 */
 #chat-quota-bar .ctx-progress-track { width: 90px; height: 7px; }
 .chat-quota-reset { font-size: 10pt; color: var(--secondary-text); white-space: nowrap; }
+/* 聊天面板周限额分组：仅百分比+倒计时（无进度条），左侧细分隔线与 5h 组区分 */
+.chat-quota-weekly { display: flex; align-items: center; gap: 6px; padding-left: 8px; border-left: 1px solid var(--divider); }
 
 .chat-send-btn {
   padding: 8px 16px;

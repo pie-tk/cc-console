@@ -11,7 +11,11 @@
     <!-- 顶部 Hero -->
     <header id="hero">
       <div class="title-row">
-        <span class="hero-emoji">📊</span>
+        <svg class="hero-emoji" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M512 624.64m-201.386667 0a201.386667 201.386667 0 1 0 402.773334 0 201.386667 201.386667 0 1 0-402.773334 0Z" fill="currentColor" opacity="0.25"/>
+          <path d="M897.706667 749.226667H672.426667c-13.653333 0-25.6-11.946667-25.6-25.6s11.946667-25.6 25.6-25.6h225.28c22.186667 0 40.96-18.773333 40.96-40.96V187.733333c0-22.186667-18.773333-40.96-40.96-40.96H126.293333C104.106667 145.066667 85.333333 163.84 85.333333 187.733333v469.333334c0 22.186667 18.773333 40.96 40.96 40.96h223.573334c13.653333 0 25.6 11.946667 25.6 25.6s-11.946667 25.6-25.6 25.6H126.293333c-51.2 0-92.16-40.96-92.16-92.16V187.733333c0-51.2 40.96-92.16 92.16-92.16h769.706667c51.2 0 92.16 40.96 92.16 92.16v469.333334c1.706667 49.493333-39.253333 92.16-90.453333 92.16z" fill="currentColor"/>
+          <path d="M696.32 930.133333H327.68c-10.24 0-18.773333-5.12-23.893333-15.36-3.413333-8.533333-3.413333-18.773333 3.413333-27.306666l184.32-225.28c10.24-11.946667 29.013333-11.946667 39.253333 0L716.8 887.466667c6.826667 6.826667 6.826667 18.773333 3.413333 27.306666-5.12 8.533333-13.653333 15.36-23.893333 15.36z m-314.026667-51.2h261.12L512 720.213333l-129.706667 158.72z" fill="currentColor"/>
+        </svg>
         <h1 class="hero-title">CC Console</h1>
         <button id="update-badge-btn" class="update-badge-btn hidden" title="发现新版本，点击查看" aria-label="发现新版本，点击查看" onclick="openAboutUpdate()">
           <svg class="update-badge-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -28,7 +32,12 @@
         <span id="usage-badge" class="usage-badge hidden"></span>
         <span class="flex-spacer"></span>
         <button id="new-instance-btn" class="new-instance-btn" title="新建 Claude Code 实例" onclick="openNewInstancePanel()">＋ 新建实例</button>
-        <button id="settings-btn" class="settings-btn" title="设置" onclick="showSettings()">&#x2699;</button>
+        <button id="settings-btn" class="settings-btn" title="设置" aria-label="设置" onclick="showSettings()">
+          <svg class="settings-btn-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -74,7 +83,7 @@
         <span class="modal-emoji">✏️</span>
         <span class="modal-title">发送对话到该实例</span>
       </div>
-      <div class="modal-subtitle" id="prompt-subtitle">输入文字后点击 发送 ⏎ 或按 Enter。多行会被折叠为空格。</div>
+      <div class="modal-subtitle" id="prompt-subtitle">输入文字后点击 发送 或按 Enter。多行会被折叠为空格。</div>
       <textarea id="prompt-input" class="modal-textarea" placeholder="输入消息..." rows="5"></textarea>
       <div class="modal-buttons">
         <button id="prompt-cancel" class="btn btn-cancel" onclick="hidePromptModal()">取消</button>
@@ -112,10 +121,19 @@
         <span class="flex-spacer"></span>
         <button class="chat-close-btn" onclick="closeChatPanel()" title="关闭">✕</button>
       </div>
-      <div class="chat-body">
-        <div class="chat-messages" id="chat-messages">
-          <div class="chat-empty">加载中...</div>
+      <div class="chat-scroll-wrap">
+        <div class="chat-body">
+          <div class="chat-messages" id="chat-messages">
+            <div class="chat-empty">加载中...</div>
+          </div>
         </div>
+        <button id="chat-scroll-btn" class="chat-scroll-btn" title="回到底部" aria-label="回到底部">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 4v10" />
+            <path d="M7.5 9.5 12 14 16.5 9.5" />
+            <path d="M5 19h14" />
+          </svg>
+        </button>
       </div>
       <div id="chat-processing" class="chat-processing hidden">
         <span class="chat-processing-spin">✻</span>
@@ -132,9 +150,9 @@
           <span id="chat-hint" class="chat-hint hidden"></span>
         </div>
         <div class="chat-input-actions">
-          <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送 ⏎</button>
-          <button id="chat-rewind-btn" class="chat-rewind-btn" onclick="handleChatRewind()" title="回溯：在终端打开历史选择器">↺ 回溯</button>
-          <button id="chat-win-btn" class="chat-rewind-btn" onclick="handleChatShowWin()" title="将该实例终端窗口置前">🪟 窗口</button>
+          <button id="chat-send-btn" class="chat-send-btn" onclick="sendChatMessage()">发送</button>
+          <button id="chat-rewind-btn" class="chat-rewind-btn" onclick="handleChatRewind()" title="回溯：在终端打开历史选择器">回溯</button>
+          <button id="chat-win-btn" class="chat-rewind-btn" onclick="handleChatShowWin()" title="将该实例终端窗口置前">窗口</button>
         </div>
       </div>
       <div id="chat-stats" class="chat-stats hidden">
@@ -153,6 +171,11 @@
           <span id="chat-quota-bar" class="ctx-progress"></span>
           <span id="chat-quota-pct" class="context-pct"></span>
           <span id="chat-quota-reset" class="chat-quota-reset"></span>
+          <span id="chat-quota-weekly" class="chat-quota-weekly" style="display:none">
+            <span class="chat-stat-label">周</span>
+            <span id="chat-weekly-pct" class="context-pct"></span>
+            <span id="chat-weekly-reset" class="chat-quota-reset"></span>
+          </span>
         </span>
       </div>
     </div>
