@@ -2837,7 +2837,7 @@ window.sendQuickReply = async function(value, kind) {
   try {
     var optimisticText = String(value);
     if (kind === 'ask') {
-      // 单选:value = optionIndex。当前题只发数字键作答;若这是最后一题,再补最终确认页的 ↓ + Enter。
+      // 单选:value = optionIndex。当前题只发数字键作答;若这是最后一题,等确认页渲染后直接发回车确认 Submit answers。
       var cur = currentAskQuestion();
       var isLastQuestion = askToolUseId && askQuestionIndex === askQuestionCount - 1;
       var seq = buildAskSequence({
@@ -2851,8 +2851,6 @@ window.sendQuickReply = async function(value, kind) {
       await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify(seq));
       if (isLastQuestion) {
         await new Promise(function(resolve) { setTimeout(resolve, 200); });
-        await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'down' }]));
-        await new Promise(function(resolve) { setTimeout(resolve, 80); });
         await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
       }
       optimisticText = cur ? getOptionLabel(cur, value) : String(value);
@@ -2904,11 +2902,9 @@ window.submitMultiSelect = async function() {
     //   1. Submit answers
     //   2. Cancel
     // 这里不能盲目对所有多选多发回车,否则在非最后一题会误伤下一题默认项。
-    // 仅当当前题是最后一题时,等待确认页渲染后自动发 ↓ + 回车完成最终提交。
+    // 仅当当前题是最后一题时,等确认页渲染后直接发回车确认 Submit answers。
     if (isLastQuestion) {
       await new Promise(function(resolve) { setTimeout(resolve, 200); });
-      await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'down' }]));
-      await new Promise(function(resolve) { setTimeout(resolve, 80); });
       await Call.ByID(ID_ACT_ASK_ANSWER, chatPanelPid, JSON.stringify([{ key: 'enter' }]));
     }
 
