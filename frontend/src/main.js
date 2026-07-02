@@ -10,6 +10,7 @@ const ID_ACT_CLEAR = 545766049;
 const ID_ACT_REWIND = 1735111375;
 const ID_ACT_PROMPT = 1205864218;
 const ID_ACT_SHOW = 970284573;
+const ID_ACT_CLOSE_INSTANCE = 20326635; // ActCloseInstance(pid) — 关闭 Claude Code 并尽量关闭对应终端窗口
 const ID_GET_SETTINGS = 236910689;
 const ID_SAVE_SETTINGS = 2628092832;
 const ID_GET_BRIDGE_STATUS = 1164906267;
@@ -26,6 +27,7 @@ const ID_GET_COMMANDS = 266082154; // GetCommandSuggestions(pid)
 const ID_SAVE_LIST_PREFS = 3233443589; // SaveListPrefs(sortField, sortDir)
 const ID_ACT_ASK_ANSWER = 1941433663; // ActAskAnswer(pid, actionsJSON) — AskUserQuestion 按键序列注入
 const ID_GET_ACCOUNT_USAGE = 1426129106; // GetAccountUsage() — 账号用量（GLM 配额 / DeepSeek 余额）
+const ID_SAVE_TEXT_FILE = 4045929184; // SaveTextFile(filename, content) — 原生保存 Markdown/文本
 
 // ---- State ----
 let currentPids = [];
@@ -105,13 +107,24 @@ let askCustomQuestionIndex = 0;
 // 只能由 PreToolUse hook 实时捕获(后端 ask/<pid>.json,经 GetChatHistory.pendingAsk 透传)。
 // detectInteraction 在 JSONL 找不到挂起 tool_use 时回退用它合成 kind:'ask'。null=无挂起。
 let currentLiveAsk = null;
+const CHAT_CHANGE_WIDTH_KEY = 'cc-console.chatChangePanelWidth';
+const CHAT_CHANGE_HIDDEN_KEY = 'cc-console.chatChangePanelHidden';
+let chatChangePanelVisible = true; // 右侧文件修改面板显隐状态（按会话记忆，用户隐藏后不再自动弹出）
+let chatChangePanelWidth = loadChatChangePanelWidth(); // 右侧文件修改面板宽度（可拖动调整）
+let chatChangePanelHiddenBySession = loadChatChangePanelHiddenPrefs(); // key(pid/session|cwd) → true 表示该会话保持隐藏
+let highlightedChangeId = ''; // 右侧修改面板当前高亮项
+let lastChatRenderModel = { items: [], changes: [] }; // 最近一次聊天渲染模型，供右侧面板/定位复用
+let markdownDownloads = {}; // markdown 下载缓存：id → {filename, content}
 let instanceMeta = {}; // pid → {topic, model}
 let newInstanceSelected = -1; // 新建实例面板当前选中项索引
 let newInstanceItems = [];    // 新建实例面板项：[{type:'dir',path}, {type:'pick'}]
 let sendOnEnter = true;       // 消息框发送键：true=回车发送(Shift+回车换行)；false=回车换行(Shift+回车发送)
 let autoCheckClaudeSettings = true;
 let autoRepairClaudeSettings = true;
+let launchYoloSetting = true;     // 设置面板里可能没有对应 DOM，保存其它设置时仍需保留后端当前值
 let chatDrafts = {};           // 消息框草稿：key = pid|cwd，关闭面板后保留，重新打开时恢复
+let chatScrollPositions = {};   // 对话滚动位置：key = pid|cwd，切换会话后恢复阅读位置
+let pendingChatScrollRestore = null; // 下一次 renderChatMessages 后应用的一次性滚动恢复
 let bridgeStatusWarnKey = '';   // 避免 settings.json 漂移告警每 10s 重复弹
 let bridgeRepairInFlight = false;
 
@@ -135,6 +148,13 @@ let chatHistoryFilling = false;// 导航填充置位，防 input 误判为手动
 let dirFilterHidden = {};
 let dirFilterSig = '';   // 唯一目录签名，变化时才重建下拉 DOM（避免每秒刷新抖动）
 
+// ---- 主区布局状态（list 实例卡片列表 / chat 左会话标签 + 右对话），持久化到 settings.viewMode ----
+let viewMode = 'list';          // 当前布局：list | chat
+let liveStalePids = [];         // 排序后的运行中实例 pid 列表（renderCards 每秒更新），供会话标签渲染
+let sessionTabsSig = '';        // 会话标签签名（pid+topic+副标题+选中），变化才重建 DOM
+let showSessionSubtitle = true; // chat 布局会话标签是否显示目录副标题
+let closingPids = {};            // 正在关闭的实例 pid，防重复点击
+
 // ---- 聊天面板回溯提示 ----
 let chatHintTimer = null;
 
@@ -143,7 +163,10 @@ let chatHintTimer = null;
 async function fetchAccountUsage() {
   try {
     var u = await Call.ByID(ID_GET_ACCOUNT_USAGE);
-    if (u) usageState = u;
+    // 始终覆盖全局状态：切到不支持/无 token 的 provider 时，后端会返回
+    // {available:false, provider:"", reason:"unsupported"|"no-token"}；若只在真值时赋值，
+    // 会把上一家（如 GLM）的旧配额残留在右下角。null 也显式收敛为 null，确保 UI 可隐藏。
+    usageState = u || null;
   } catch (e) {
     console.warn("GetAccountUsage failed:", e);
   }
@@ -157,9 +180,10 @@ async function boot() {
     console.error("Theme init error:", e);
   }
   loadSendMode(); // 加载消息框发送键设置，更新占位符/提示文案
-  loadListPrefs(); // 加载持久化的列表排序偏好（字段 + 方向）
+  await loadListPrefs(); // 加载持久化的列表偏好（排序 + 布局），需在首次 refresh 前应用布局
   initSlashAutocomplete(); // 绑定消息框斜杠命令自动补全
   initDirFilter(); // 绑定目录筛选下拉的外部点击关闭
+  window.addEventListener('resize', applyChatChangePanelWidth);
   refresh();
   pollBridgeStatus();
   setInterval(refresh, 1000);
@@ -203,7 +227,10 @@ async function loadListPrefs() {
     if (s) {
       if (s.sortField) sortField = s.sortField;
       if (s.sortDir) sortDir = s.sortDir;
+      if (s.viewMode === 'list' || s.viewMode === 'chat') viewMode = s.viewMode;
+      if (typeof s.showSessionSubtitle === 'boolean') showSessionSubtitle = s.showSessionSubtitle;
       updateSortBar();
+      applyViewMode(); // 应用持久化的布局（容器显隐 + .chat-dialog 挂载点）
     }
   } catch (e) { /* 读取失败保持默认 */ }
 }
@@ -211,8 +238,243 @@ async function loadListPrefs() {
 // 持久化当前排序偏好（字段 + 方向）。失败静默，不阻断 UI。
 async function saveListPrefs() {
   try {
-    await Call.ByID(ID_SAVE_LIST_PREFS, sortField, sortDir);
+    await Call.ByID(ID_SAVE_LIST_PREFS, sortField, sortDir, viewMode, showSessionSubtitle);
   } catch (e) { /* 忽略 */ }
+}
+
+// ---- 主区布局切换（list 实例卡片 / chat 左标签 + 右对话） ----
+
+// applyViewMode 按 viewMode 同步主区容器显隐、body 标记 class，并把 .chat-dialog
+// 子树移动到对应挂载点（chat→#chat-pane 内联；list→#chat-overlay 作 modal）。
+// 移动整棵子树后所有 chat-* 的 getElementById 仍命中，渲染函数无需改动。
+function applyViewMode() {
+  var cards = document.getElementById('cards-container');
+  var split = document.getElementById('split-view');
+  if (cards) cards.classList.toggle('hidden', viewMode === 'chat');
+  if (split) split.classList.toggle('hidden', viewMode !== 'chat');
+  document.body.classList.toggle('chat-layout', viewMode === 'chat');
+  updateSortBar();
+  updateLayoutToggle();
+  // 移动对话子树挂载点（仅切布局时发生一次，不在每秒 refresh / 切 tab 里做）
+  var dialog = document.getElementById('chat-dialog');
+  if (dialog) {
+    var host = viewMode === 'chat'
+      ? document.getElementById('chat-pane')
+      : document.getElementById('chat-overlay');
+    if (host && dialog.parentNode !== host) host.appendChild(dialog);
+  }
+}
+
+// updateLayoutToggle 根据当前布局刷新右上角切换按钮：仅显示点击后的目标布局图标。
+function updateLayoutToggle() {
+  var btn = document.getElementById('layout-toggle-btn');
+  if (!btn) return;
+  var isChat = viewMode === 'chat';
+  btn.classList.toggle('mode-chat', isChat);
+  btn.classList.toggle('mode-list', !isChat);
+  btn.title = isChat ? '切换到实例列表' : '切换到对话布局';
+  btn.setAttribute('aria-label', btn.title);
+}
+
+function loadChatChangePanelWidth() {
+  try {
+    var v = parseInt(localStorage.getItem(CHAT_CHANGE_WIDTH_KEY) || '', 10);
+    if (v >= 280 && v <= 900) return v;
+  } catch (e) { /* ignore */ }
+  return 420;
+}
+
+function persistChatChangePanelWidth() {
+  try { localStorage.setItem(CHAT_CHANGE_WIDTH_KEY, String(chatChangePanelWidth)); } catch (e) { /* ignore */ }
+}
+
+function loadChatChangePanelHiddenPrefs() {
+  try {
+    var raw = localStorage.getItem(CHAT_CHANGE_HIDDEN_KEY) || '{}';
+    var obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function persistChatChangePanelHiddenPrefs() {
+  try { localStorage.setItem(CHAT_CHANGE_HIDDEN_KEY, JSON.stringify(chatChangePanelHiddenBySession || {})); } catch (e) { /* ignore */ }
+}
+
+function currentChatChangeSessionKey() {
+  return chatSessionKey(chatPanelPid);
+}
+
+function chatChangePanelMaxWidth() {
+  var wrap = document.querySelector('.chat-scroll-wrap');
+  if (!wrap || !wrap.clientWidth) return 900;
+  // 给左侧对话正文至少保留一段可读宽度，避免修改面板过宽时拖动线贴到会话列表滚动条。
+  return Math.max(280, Math.min(900, wrap.clientWidth - 360));
+}
+
+function clampChatChangePanelWidth(width) {
+  return Math.max(280, Math.min(chatChangePanelMaxWidth(), width));
+}
+
+function repositionChatChangeResizer() {
+  var resizer = document.getElementById('chat-change-resizer');
+  var panel = document.getElementById('chat-change-panel');
+  if (!resizer) return;
+  if (!panel || panel.classList.contains('hidden')) {
+    resizer.classList.add('hidden');
+    return;
+  }
+  resizer.style.right = chatChangePanelWidth + 'px';
+}
+
+function applyChatChangePanelWidth() {
+  chatChangePanelWidth = clampChatChangePanelWidth(chatChangePanelWidth);
+  var panel = document.getElementById('chat-change-panel');
+  if (panel) {
+    panel.style.width = chatChangePanelWidth + 'px';
+    panel.style.flexBasis = chatChangePanelWidth + 'px';
+  }
+  repositionChatChangeResizer();
+}
+
+function syncChatChangePanelVisibilityFromPrefs(pid) {
+  var key = chatSessionKey(pid);
+  chatChangePanelVisible = !(key && chatChangePanelHiddenBySession[key]);
+}
+
+function setChatChangePanelVisibility(visible) {
+  chatChangePanelVisible = !!visible;
+  var key = currentChatChangeSessionKey();
+  if (key) {
+    if (visible) delete chatChangePanelHiddenBySession[key];
+    else chatChangePanelHiddenBySession[key] = true;
+    persistChatChangePanelHiddenPrefs();
+  }
+}
+
+function startChatChangeResize(ev) {
+  ev.preventDefault();
+  var startX = ev.clientX;
+  var startWidth = chatChangePanelWidth;
+  function onMove(e) {
+    var next = clampChatChangePanelWidth(startWidth - (e.clientX - startX));
+    chatChangePanelWidth = next;
+    applyChatChangePanelWidth();
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    persistChatChangePanelWidth();
+    repositionChatChangeResizer();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+// switchLayout 在 list/chat 间切换；不带参数则 toggle。切换前清理旧模式状态。
+window.switchLayout = function(mode) {
+  if (mode !== 'list' && mode !== 'chat') mode = (viewMode === 'list' ? 'chat' : 'list');
+  if (mode === viewMode) return;
+  if (chatPanelPid !== null) closeChatPanel(); // 切布局前先关当前对话（modal 收 overlay / 内联显空态）
+  viewMode = mode;
+  applyViewMode();
+  saveListPrefs();
+  if (viewMode === 'chat') {
+    renderSessionTabs();
+    var first = firstLivePid();
+    if (first !== null) selectSession(first);
+    else showChatPaneEmpty();
+  }
+};
+
+// firstLivePid 返回当前首个运行中实例 pid，无则 null。
+function firstLivePid() {
+  return liveStalePids.length ? liveStalePids[0] : null;
+}
+
+// showChatPaneEmpty 显示右栏空态（无运行中实例 / 未选中）。dialog 永不 hidden，靠空态覆盖层遮挡。
+function showChatPaneEmpty() {
+  var empty = document.getElementById('chat-pane-empty');
+  if (empty) empty.classList.remove('hidden');
+}
+
+// selectSession 选中某个实例标签并在右栏打开其对话（chat 模式专用）。
+window.selectSession = function(pid) {
+  if (pid === chatPanelPid) return;           // 已选中
+  if (chatPanelPid !== null) closeChatPanel({ keepPane: true }); // 切换前保存旧会话状态,但不闪空态
+  var tabs = document.getElementById('session-tabs-list');
+  if (tabs) {
+    var items = tabs.querySelectorAll('.session-tab');
+    for (var i = 0; i < items.length; i++) {
+      items[i].classList.toggle('active', Number(items[i].getAttribute('data-pid')) === pid);
+    }
+  }
+  openChatPanel(pid);
+};
+
+// toggleSessionSubtitle 切换会话标签目录副标题显示（常规设置开关）。
+window.toggleSessionSubtitle = function(val) {
+  showSessionSubtitle = !!val;
+  saveListPrefs();
+  renderSessionTabs();
+};
+
+// renderSessionTabs 渲染左侧会话标签列表。签名（pid+topic+副标题+选中）变化才重建 DOM，
+// 避免每秒刷新抖动；仅在 chat 模式调用。
+function renderSessionTabs() {
+  var listEl = document.getElementById('session-tabs-list');
+  var emptyEl = document.getElementById('session-tabs-empty');
+  if (!listEl) return;
+  if (!liveStalePids.length) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    sessionTabsSig = '';
+    return;
+  }
+  if (emptyEl) emptyEl.classList.add('hidden');
+  var topics = liveStalePids.map(function(p) {
+    var m = instanceMeta[p]; return (m && m.topic) ? m.topic : '';
+  });
+  var waiting = liveStalePids.map(function(p) {
+    var m = instanceMeta[p]; return (m && m.waitingKind) ? m.waitingKind : '';
+  });
+  var closing = liveStalePids.map(function(p) { return closingPids[p] ? '1' : ''; });
+  // 签名含副标题（目录）与显示开关：开关切换或目录变化才重建
+  var subs = showSessionSubtitle ? liveStalePids.map(function(p) {
+    var m = instanceMeta[p]; return (m && m.cwd) ? m.cwd : '';
+  }).join('⊥') : '';
+  var sig = liveStalePids.join(',') + '|' + topics.join('⊕') + '|' + waiting.join('⊙') + '|' + closing.join('⊗') + '|' + subs + '|' + (chatPanelPid || '');
+  if (sig === sessionTabsSig) return;
+  sessionTabsSig = sig;
+  var html = '';
+  for (var i = 0; i < liveStalePids.length; i++) {
+    var pid = liveStalePids[i];
+    var m = instanceMeta[pid] || {};
+    var topic = m.topic || '<新会话>';
+    var status = m.status || 'unknown';
+    var waitingKind = m.waitingKind || '';
+    var active = pid === chatPanelPid ? ' active' : '';
+    var waitingCls = waitingKind ? (' waiting waiting-' + waitingKind) : '';
+    var closingCls = closingPids[pid] ? ' closing' : '';
+    var waitingTitle = waitingKind === 'ask' ? '等待选择'
+      : waitingKind === 'plan' ? '等待计划审批'
+      : waitingKind === 'permission' ? '等待权限确认' : '';
+    var waitingBadge = waitingKind === 'ask' ? '待选'
+      : waitingKind === 'plan' ? '审批'
+      : waitingKind === 'permission' ? '授权' : '';
+    var sub = (showSessionSubtitle && m.cwd) ? '<span class="session-tab-sub">' + escHtml(cwdTitle(m.cwd)) + '</span>' : '';
+    html += '<div class="session-tab' + active + waitingCls + closingCls + '" data-pid="' + pid + '" onclick="selectSession(' + pid + ')" title="' + escAttr(waitingTitle ? (waitingTitle + ' · ' + topic) : topic) + '">'
+      + '<span class="session-tab-dot ' + status + '"></span>'
+      + '<span class="session-tab-info">'
+      + '<span class="session-tab-name">' + escHtml(topic) + '</span>'
+      + sub
+      + '</span>'
+      + (waitingBadge ? '<span class="session-tab-wait-badge">' + waitingBadge + '</span>' : '')
+      + '<button class="session-tab-close" onclick="handleCloseSession(event, ' + pid + ')" title="关闭该 Claude Code">×</button>'
+      + '</div>';
+  }
+  listEl.innerHTML = html;
 }
 
 boot();
@@ -250,12 +512,26 @@ async function refresh() {
       var gonePid = chatPanelPid;
       closeChatPanel();
       flashFoot("📭  实例 PID " + gonePid + " 已退出，对话面板已自动关闭");
+      // chat 布局下接力到下一个实例，否则显空态
+      if (viewMode === 'chat') {
+        var next = firstLivePid();
+        if (next !== null) selectSession(next); else showChatPaneEmpty();
+      }
     }
 
     // 聊天面板打开时同步刷新消息 + 底部 context/tokens 信息条
     if (chatPanelPid !== null) {
       refreshChatMessages(chatPanelPid);
       renderChatStats(chatPanelPid);
+    }
+    // chat 布局下刷新左侧会话标签（实例增减 / 主题变化 / 选中变化）；
+    // 若未选中任何会话但有运行中实例，自动选中首个（覆盖首次进入 chat 模式 / 新实例出现）
+    if (viewMode === 'chat') {
+      renderSessionTabs();
+      if (chatPanelPid === null) {
+        var first = firstLivePid();
+        if (first !== null) selectSession(first);
+      }
     }
   } catch (e) {
     console.error("Refresh error:", e);
@@ -406,7 +682,9 @@ function renderCards(live, stale) {
       model: inst.model || '',
       branch: inst.gitBranch || '',
       cwd: inst.cwd || '',
+      sessionId: inst.sessionId || '',
       status: inst.status || 'unknown',
+      waitingKind: inst.waitingKind || '',
       hasConversation: !!inst.hasConversation,
       contextTokens: inst.contextTokens || 0,
       contextLimit: inst.contextLimit || 0,
@@ -418,9 +696,11 @@ function renderCards(live, stale) {
       totalInputTokens: inst.totalInputTokens || 0,
       totalOutputTokens: inst.totalOutputTokens || 0,
       totalCacheTokens: inst.totalCacheTokens || 0,
+      waitingKind: inst.waitingKind || '',
     };
   }
   instanceMeta = newMeta;
+  liveStalePids = all.map(function(i) { return i.pid; });
 
   // 刷新目录筛选下拉（含按钮显隐、文案、勾选态）
   renderDirFilter(all);
@@ -818,8 +1098,8 @@ function updateCardText(el, inst) {
 }
 
 // ---- Escape helpers ----
-function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escHtml(s) { s = String(s == null ? '' : s); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escAttr(s) { s = String(s == null ? '' : s); return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // highlightDiff 检测代码是否为 diff 格式，若是则对 +/-/@@ 行着色并返回 HTML；
 // 若不是 diff 则返回空字符串（调用方回退到普通代码块渲染）。
@@ -907,6 +1187,95 @@ function computeLineDiff(oldStr, newStr, startLine) {
   return result;
 }
 
+// parseToolInput 安全解析 tool_use.content(JSON 字符串)。失败返回 null，调用方统一走 fallback。
+function parseToolInput(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
+function parseJSONSafe(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
+function clipText(s, n) {
+  s = String(s == null ? '' : s).replace(/[\r\n]+/g, ' ').trim();
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+function fullText(s) { return String(s == null ? '' : s).trim(); }
+function hasOwn(o, k) { return Object.prototype.hasOwnProperty.call(o || {}, k); }
+function countTextLines(s) { return String(s || '').length ? String(s || '').split('\n').length : 0; }
+
+function readRangeText(input) {
+  if (!input) return '';
+  if (input.pages) return 'pages ' + input.pages;
+  if (hasOwn(input, 'offset') || hasOwn(input, 'limit')) {
+    var off = Number(input.offset || 0);
+    var lim = Number(input.limit || 0);
+    if (lim > 0) return 'lines ' + (off + 1) + '-' + (off + lim);
+    if (off > 0) return 'from line ' + (off + 1);
+  }
+  return '';
+}
+
+function primaryField(input) {
+  if (!input) return '';
+  var keys = ['file_path','filePath','path','url','image_source','video_source','nodeId','query','search_query','pattern','command','description','skill','subject','taskId','action','operation','name'];
+  for (var i = 0; i < keys.length; i++) {
+    var v = input[keys[i]];
+    if (v != null && v !== '') return clipText(v, 120);
+  }
+  return '';
+}
+
+function buildEditDiffView(oldStr, newStr, startLine, maxRows) {
+  oldStr = oldStr || '';
+  newStr = newStr || '';
+  var oldLines = oldStr.split('\n');
+  var newLines = newStr.split('\n');
+  var added = 0, removed = 0;
+  // 大 diff 避免 LCS O(m*n) 卡住 UI：直接给 old/new 片段预览。
+  if (oldLines.length * newLines.length > 40000 || oldStr.length + newStr.length > 60000) {
+    added = newLines.length;
+    removed = oldLines.length;
+    var oldPreview = oldStr.length > 3500 ? oldStr.slice(0, 3500) + '\n...（旧内容过长，已截断）' : oldStr;
+    var newPreview = newStr.length > 3500 ? newStr.slice(0, 3500) + '\n...（新内容过长，已截断）' : newStr;
+    return {
+      added: added,
+      removed: removed,
+      truncated: true,
+      html: '<div class="tool-edit-hint">⚠ 变更较大，已显示 old/new 预览</div>'
+        + '<details class="tool-edit-details"><summary>查看旧内容片段</summary><pre class="chat-tool-input-pre">' + escHtml(oldPreview) + '</pre></details>'
+        + '<details class="tool-edit-details" open><summary>查看新内容片段</summary><pre class="chat-tool-input-pre">' + escHtml(newPreview) + '</pre></details>'
+    };
+  }
+  var changes = computeLineDiff(oldStr, newStr, startLine || 0);
+  for (var i = 0; i < changes.length; i++) {
+    if (changes[i].type === 'add') added++;
+    else if (changes[i].type === 'del') removed++;
+  }
+  var limit = (maxRows == null) ? 260 : maxRows;
+  var diff = '';
+  for (var k = 0; k < changes.length && (limit <= 0 || k < limit); k++) {
+    var ch = changes[k];
+    var cls = ch.type === 'del' ? 'diff-del' : (ch.type === 'add' ? 'diff-add' : 'diff-same');
+    var sign = ch.type === 'del' ? '-' : (ch.type === 'add' ? '+' : ' ');
+    var lnHTML = ch.ln ? '<span class="diff-ln">' + ch.ln + '</span>' : '';
+    diff += '<div class="' + cls + '">' + lnHTML
+      + '<span class="diff-ct">' + sign + ' ' + escHtml(ch.text || ' ') + '</span></div>';
+  }
+  var truncated = limit > 0 && changes.length > limit;
+  if (truncated) diff += '<div class="diff-same"><span class="diff-ct">…（diff 过长，已截断）</span></div>';
+  return {
+    added: added,
+    removed: removed,
+    truncated: truncated,
+    html: '<div class="tool-edit-diff' + (startLine ? ' has-linenr' : '') + '">' + diff + '</div>'
+  };
+}
+
 // renderToolCallBody 渲染工具调用的输入体。对 Edit/Write 工具提取 old_string/new_string
 // 并渲染为增删行颜色标记（红删绿增）；其他工具回退为 JSON 原文。
 // startLine 为 Edit 修改区域起始行号（来自后端定位），>0 时 diff 左侧显示行号列。
@@ -916,8 +1285,7 @@ function renderToolCallBody(tool, rawContent, startLine) {
   }
 
   // 尝试解析 JSON 输入
-  var input;
-  try { input = JSON.parse(rawContent); } catch (e) { input = null; }
+  var input = parseToolInput(rawContent);
   if (!input) {
     return '<div class="chat-msg-tool-input">' + escHtml(rawContent) + '</div>';
   }
@@ -945,17 +1313,8 @@ function renderToolCallBody(tool, rawContent, startLine) {
     return html;
   }
 
-  var changes = computeLineDiff(oldStr, newStr, startLine || 0);
-  var diff = '';
-  for (var k = 0; k < changes.length; k++) {
-    var ch = changes[k];
-    var cls = ch.type === 'del' ? 'diff-del' : (ch.type === 'add' ? 'diff-add' : 'diff-same');
-    var sign = ch.type === 'del' ? '-' : (ch.type === 'add' ? '+' : ' ');
-    var lnHTML = ch.ln ? '<span class="diff-ln">' + ch.ln + '</span>' : '';
-    diff += '<div class="' + cls + '">' + lnHTML
-      + '<span class="diff-ct">' + sign + ' ' + escHtml(ch.text || ' ') + '</span></div>';
-  }
-  html += '<div class="tool-edit-diff' + (startLine ? ' has-linenr' : '') + '">' + diff + '</div>';
+  var diffView = buildEditDiffView(oldStr, newStr, startLine || 0, 260);
+  html += diffView.html;
   return html;
 }
 
@@ -967,45 +1326,53 @@ function renderToolCallBody(tool, rawContent, startLine) {
 // 路径完整保留（不去 basename），文本类参数过长截断到 100 字符。
 function toolKeyInfo(tool, input) {
   if (!input) return { param: '', path: '' };
-  function clip(s, n) {
-    s = String(s == null ? '' : s).replace(/[\r\n]+/g, ' ').trim();
-    return s.length > n ? s.slice(0, n) + '…' : s;
-  }
-  function full(p) { return String(p == null ? '' : p).trim(); }
   switch (tool) {
-  case 'Read':
-    var rfp = full(input.file_path);
-    if (input.offset) rfp += ':' + input.offset;
-    return { param: rfp, path: '' };
+  case 'Read': {
+    var p = fullText(input.file_path || input.path);
+    var rr = readRangeText(input);
+    return { param: p + (rr ? ' · ' + rr : ''), path: '' };
+  }
   case 'Write':
   case 'Edit':
+    return { param: fullText(input.file_path || input.filePath), path: '' };
   case 'NotebookEdit':
-    return { param: full(input.file_path), path: '' };
+    return { param: fullText(input.notebook_path || input.file_path || input.filePath), path: '' };
   case 'Bash':
-    return { param: clip(input.command, 100), path: '' };
-  case 'Grep':
-    return { param: clip(input.pattern, 100), path: full(input.path) };
+    return { param: clipText(input.description || input.command, 120), path: input.description ? clipText(input.command, 160) : '' };
+  case 'Grep': {
+    var scope = input.path || input.glob || input.type || '';
+    var mode = input.output_mode ? (' · ' + input.output_mode) : '';
+    return { param: clipText(input.pattern, 120) + mode, path: fullText(scope) };
+  }
   case 'Glob':
-    return { param: clip(input.pattern, 100), path: full(input.path) };
+    return { param: clipText(input.pattern, 120), path: fullText(input.path) };
   case 'Agent':
-    return { param: clip(input.description, 100), path: '' };
-  case 'WebSearch':
-    return { param: clip(input.query, 100), path: '' };
-  case 'TaskCreate':
-    return { param: clip(input.subject, 100), path: '' };
-  case 'TaskUpdate':
-    return { param: input.taskId ? ('#' + input.taskId + (input.status ? ' → ' + input.status : '')) : '', path: '' };
+    return { param: clipText(input.description || input.subagent_type || input.prompt, 120), path: fullText(input.subagent_type) };
   case 'Skill':
-    return { param: clip(input.skill, 100), path: '' };
+    return { param: clipText(input.skill, 100), path: clipText(input.args || '', 160) };
+  case 'WebSearch':
+    return { param: clipText(input.query, 120), path: '' };
+  case 'WebFetch':
+    return { param: clipText(input.url, 120), path: clipText(input.prompt, 160) };
+  case 'TaskCreate':
+    return { param: clipText(input.subject, 120), path: '' };
+  case 'TaskUpdate':
+  case 'TaskGet':
+  case 'TaskStop':
+  case 'TaskOutput':
+    return { param: input.taskId || input.task_id ? ('#' + (input.taskId || input.task_id) + (input.status ? ' → ' + input.status : '')) : clipText(primaryField(input), 120), path: '' };
+  case 'LSP':
+    return { param: clipText((input.operation || '') + (input.filePath ? (' · ' + input.filePath + (input.line ? ':' + input.line : '')) : ''), 140), path: '' };
   default:
-    return { param: '', path: '' };
+    return { param: primaryField(input), path: '' };
   }
 }
 
 // resultSummary 由工具名 + 结果内容生成一行语义摘要，返回 {text, ok}。
 // ok=false 表示失败（红色 ✗）。复刻 Claude Code 的 ⎿ Read N lines / Found N results 风格。
-function resultSummary(tool, content, isError) {
+function resultSummary(tool, content, isError, toolUseResult) {
   content = content || '';
+  var structured = parseJSONSafe(toolUseResult || '');
   if (isError) {
     var first = (content.split('\n')[0] || '失败').trim();
     return { text: '✗ ' + (first || '失败'), ok: false };
@@ -1015,28 +1382,38 @@ function resultSummary(tool, content, isError) {
   for (var i = 0; i < arr.length; i++) if (arr[i].trim()) nonEmpty++;
   function lastNonEmpty() {
     for (var j = arr.length - 1; j >= 0; j--) {
-      if (arr[j].trim()) return arr[j].slice(0, 60);
+      if (arr[j].trim()) return arr[j].slice(0, 80);
     }
     return '';
   }
   switch (tool) {
   case 'Read':
-    return { text: nonEmpty > 0 ? ('Read ' + nonEmpty + ' lines') : 'Empty', ok: true };
+    return { text: nonEmpty > 0 ? ('读取 ' + nonEmpty + ' 行') : '空内容', ok: true };
   case 'Grep':
+    if (structured && structured.numMatches != null) return { text: '命中 ' + structured.numMatches + ' 处' + (structured.numFiles != null ? (' · ' + structured.numFiles + ' 文件') : ''), ok: true };
+    return { text: nonEmpty > 0 ? ('找到 ' + nonEmpty + ' 行') : '无结果', ok: true };
   case 'Glob':
-    return { text: nonEmpty > 0 ? ('Found ' + nonEmpty + ' results') : 'No results', ok: true };
+    if (structured && structured.numFiles != null) return { text: '匹配 ' + structured.numFiles + ' 个文件', ok: true };
+    return { text: nonEmpty > 0 ? ('匹配 ' + nonEmpty + ' 项') : '无结果', ok: true };
   case 'Bash':
+    if (structured && structured.stderr) return { text: '✗ ' + clipText(structured.stderr, 80), ok: false };
     var em = /Exit code (\d+)/.exec(content);
     if (em) return { text: '✗ Exit ' + em[1], ok: false };
+    if (structured && structured.stdout) return { text: clipText(structured.stdout.split('\n').filter(Boolean).pop() || structured.stdout, 80) || '(no output)', ok: true };
     return { text: lastNonEmpty() || '(no output)', ok: true };
   case 'Write':
-    return { text: 'Written', ok: true };
+    return { text: '已写入', ok: true };
   case 'Edit':
-    return { text: 'Updated', ok: true };
+    return { text: '已修改', ok: true };
+  case 'NotebookEdit':
+    return { text: '已修改 Notebook', ok: true };
   case 'Agent':
-    return { text: 'Completed', ok: true };
+    if (structured && structured.totalToolUseCount != null) return { text: '完成 · ' + structured.totalToolUseCount + ' 个工具', ok: true };
+    return { text: '完成', ok: true };
+  case 'Skill':
+    return { text: '已执行 skill', ok: true };
   default:
-    return { text: (arr[0] || '').slice(0, 60) || '(empty)', ok: true };
+    return { text: (arr[0] || '').slice(0, 80) || '(empty)', ok: true };
   }
 }
 
@@ -1046,8 +1423,7 @@ function resultSummary(tool, content, isError) {
 function renderToolCard(toolUse, result) {
   var tool = toolUse.tool || 'tool';
   var rawInput = toolUse.content || '';
-  var input = null;
-  try { input = JSON.parse(rawInput); } catch (e) { input = null; }
+  var input = parseToolInput(rawInput);
   var info = toolKeyInfo(tool, input);
 
   var html = '<div class="chat-msg chat-tool-card">';
@@ -1059,9 +1435,15 @@ function renderToolCard(toolUse, result) {
     + (info.path ? '<span class="chat-tool-path">' + escHtml(info.path) + '</span>' : '')
     + '</div>';
 
-  // 主体：Edit/Write 走 diff；其他折叠 input 全文
+  // 主体：Edit/Write 走 diff；Skill args 默认折叠；其他折叠 input 全文
   if (tool === 'Edit' || tool === 'Write') {
     html += renderToolCallBody(tool, rawInput, toolUse.editStartLine || 0);
+  } else if (tool === 'Skill' && input) {
+    var args = input.args || '';
+    if (args) {
+      html += '<details class="chat-tool-input-expand"><summary>展开 skill 参数</summary>'
+        + '<pre class="chat-tool-input-pre">' + escHtml(args) + '</pre></details>';
+    }
   } else if (rawInput) {
     html += '<details class="chat-tool-input-expand"><summary>查看调用参数</summary>'
       + '<pre class="chat-tool-input-pre">' + escHtml(rawInput) + '</pre></details>';
@@ -1070,7 +1452,7 @@ function renderToolCard(toolUse, result) {
   // 结果区
   if (result) {
     var rc = result.content || '';
-    var sum = resultSummary(tool, rc, !!result.isError);
+    var sum = resultSummary(tool, rc, !!result.isError, result.toolUseResult || toolUse.toolUseResult);
     html += '<div class="chat-tool-result ' + (sum.ok ? 'ok' : 'err') + '">'
       + '<span class="chat-tool-result-mark">⎿</span>'
       + '<span class="chat-tool-result-text">' + escHtml(sum.text) + '</span>'
@@ -1092,6 +1474,240 @@ function renderToolCard(toolUse, result) {
 
   html += '</div>';
   return html;
+}
+
+function isInteractiveTool(tool) {
+  return tool === 'AskUserQuestion' || tool === 'ExitPlanMode' || tool === 'EnterPlanMode';
+}
+
+function summarizeToolCall(toolUse, result) {
+  var tool = toolUse.tool || 'tool';
+  var input = parseToolInput(toolUse.content || '');
+  var info = toolKeyInfo(tool, input);
+  var sum = result ? resultSummary(tool, result.content || '', !!result.isError, result.toolUseResult || toolUse.toolUseResult) : { text: '等待中…', ok: true };
+  return {
+    tool: tool,
+    input: input,
+    param: info.param || '',
+    path: info.path || '',
+    resultText: sum.text || '',
+    ok: !!sum.ok,
+    pending: !result
+  };
+}
+
+function pairToolCalls(messages) {
+  var resultByToolId = {};
+  for (var i = 0; i < messages.length; i++) {
+    var m = messages[i];
+    if (m.role === 'tool_result' && m.toolId && !resultByToolId[m.toolId]) resultByToolId[m.toolId] = m;
+  }
+  var consumed = {};
+  var items = [];
+  for (var j = 0; j < messages.length; j++) {
+    var msg = messages[j];
+    if (msg.role === 'tool_use') {
+      var matched = (msg.toolId && resultByToolId[msg.toolId]) ? resultByToolId[msg.toolId] : null;
+      if (matched) consumed[msg.toolId] = true;
+      var item = { kind: 'tool', toolUse: msg, result: matched, index: j };
+      item.summary = summarizeToolCall(msg, matched);
+      items.push(item);
+    } else if (msg.role === 'tool_result') {
+      if (msg.toolId && consumed[msg.toolId]) continue;
+      items.push({ kind: 'tool_result', message: msg, index: j });
+    } else if (msg.role === 'command') {
+      items.push({ kind: 'command', message: msg, index: j });
+    } else {
+      items.push({ kind: 'message', message: msg, index: j });
+    }
+  }
+  return items;
+}
+
+function canGroupTool(item) {
+  if (!item || item.kind !== 'tool') return false;
+  var tool = item.toolUse.tool || '';
+  if (!item.result) return false; // pending/permission/ask 必须单独显示
+  if (isInteractiveTool(tool)) return false;
+  // 文件/代码修改必须保留原来的内联 diff，不压缩进工具组。
+  if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' || tool === 'NotebookEdit') return false;
+  return true;
+}
+
+function buildToolGroups(items) {
+  var out = [];
+  var buf = [];
+  function flush() {
+    if (buf.length >= 2) out.push({ kind: 'tool_group', items: buf.slice(), turn: buf[0].toolUse.turn });
+    else if (buf.length === 1) out.push(buf[0]);
+    buf = [];
+  }
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (canGroupTool(it)) {
+      if (buf.length && buf[0].toolUse.turn !== it.toolUse.turn) flush();
+      buf.push(it);
+    } else {
+      flush();
+      out.push(it);
+    }
+  }
+  flush();
+  return out;
+}
+
+function collectChangeEntries(items) {
+  var changes = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!it || it.kind !== 'tool') continue;
+    var tool = it.toolUse.tool || '';
+    if (tool !== 'Edit' && tool !== 'Write' && tool !== 'NotebookEdit') continue;
+    var input = parseToolInput(it.toolUse.content || '');
+    if (!input) continue;
+    var id = 'chg-' + i + '-' + (it.toolUse.toolId || ('idx' + it.index));
+    var filePath = input.file_path || input.filePath || input.notebook_path || '';
+    var entry = {
+      id: id,
+      toolId: it.toolUse.toolId || '',
+      tool: tool,
+      filePath: filePath,
+      ts: it.toolUse.ts || 0,
+      turn: it.toolUse.turn || 0,
+      status: it.result && it.result.isError ? 'error' : (it.result ? 'ok' : 'pending'),
+      title: tool + (filePath ? (' · ' + filePath) : ''),
+      summary: '',
+      previewHTML: '',
+      added: 0,
+      removed: 0
+    };
+    if (tool === 'Edit') {
+      var oldStr = input.old_string || '';
+      var newStr = input.new_string || '';
+      var dv = buildEditDiffView(oldStr, newStr, it.toolUse.editStartLine || 0, 0);
+      entry.added = dv.added;
+      entry.removed = dv.removed;
+      entry.summary = '+' + dv.added + ' / -' + dv.removed + (it.toolUse.editStartLine ? (' · line ' + it.toolUse.editStartLine) : '');
+      entry.previewHTML = dv.html;
+    } else if (tool === 'Write') {
+      var content = input.content || '';
+      var wc = content.length > 20000 ? content.slice(0, 20000) + '\n...（内容过长，已截断）' : content;
+      entry.added = countTextLines(content);
+      entry.summary = countTextLines(content) + ' 行 · ' + content.length + ' 字符';
+      entry.previewHTML = '<details class="chat-change-write"><summary>📝 新建/覆盖文件 · ' + escHtml(entry.summary) + '</summary>'
+        + '<div class="tool-edit-diff chat-change-write-body"><pre><code>' + escHtml(wc) + '</code></pre></div></details>';
+    } else if (tool === 'NotebookEdit') {
+      var src = input.new_source || input.source || input.content || '';
+      var np = src.length > 8000 ? src.slice(0, 8000) + '\n...（内容过长，已截断）' : src;
+      entry.summary = (input.edit_mode || 'replace') + (input.cell_id ? (' · cell ' + input.cell_id) : '');
+      entry.previewHTML = '<div class="tool-edit-hint">📓 Notebook ' + escHtml(entry.summary) + '</div>'
+        + (np ? '<div class="tool-edit-diff"><pre><code>' + escHtml(np) + '</code></pre></div>' : '<div class="chat-change-empty">无可预览内容</div>');
+    }
+    it.changeId = id;
+    changes.push(entry);
+  }
+  return changes;
+}
+
+function buildChatRenderModel(messages) {
+  var paired = pairToolCalls(messages || []);
+  var changes = collectChangeEntries(paired);
+  return { items: buildToolGroups(paired), changes: changes };
+}
+
+function renderToolCardWithChange(item) {
+  return renderToolCard(item.toolUse, item.result);
+}
+
+function renderToolGroupCard(group) {
+  var rows = '';
+  for (var i = 0; i < group.items.length; i++) {
+    var it = group.items[i];
+    var s = it.summary || summarizeToolCall(it.toolUse, it.result);
+    var changeAttr = it.changeId ? (' data-change-id="' + escAttr(it.changeId) + '" onclick="focusChange(\'' + escAttr(it.changeId) + '\')"') : '';
+    var cls = 'chat-tool-row' + (it.changeId ? ' chat-change-link' : '');
+    rows += '<div class="' + cls + '"' + changeAttr + '>'
+      + '<span class="chat-tool-row-dot">⏺</span>'
+      + '<span class="chat-tool-row-name">' + escHtml(s.tool) + '</span>'
+      + '<span class="chat-tool-row-main">' + escHtml(s.param || '') + '</span>'
+      + (s.path ? '<span class="chat-tool-row-path">' + escHtml(s.path) + '</span>' : '')
+      + '<span class="chat-tool-row-result ' + (s.ok ? 'ok' : 'err') + '">⎿ ' + escHtml(s.resultText || '') + '</span>'
+      + '</div>';
+    if (s.tool === 'Skill' && s.input && s.input.args) {
+      rows += '<details class="chat-tool-row-detail"><summary>展开 ' + escHtml(s.input.skill || 'Skill') + ' 参数</summary>'
+        + '<pre class="chat-tool-input-pre">' + escHtml(s.input.args) + '</pre></details>';
+    }
+  }
+  return '<div class="chat-msg chat-tool-card chat-tool-group">'
+    + '<div class="chat-tool-head"><span class="chat-tool-dot">⏺</span><span class="chat-tool-name">工具调用</span><span class="chat-tool-param">连续 ' + group.items.length + ' 条</span></div>'
+    + '<div class="chat-tool-group-list">' + rows + '</div>'
+    + '</div>';
+}
+
+function markdownSuggestedFilename(m, idx) {
+  var ts = m.ts ? new Date(m.ts) : new Date();
+  var stamp = ts.getFullYear()
+    + String(ts.getMonth() + 1).padStart(2, '0')
+    + String(ts.getDate()).padStart(2, '0') + '-'
+    + String(ts.getHours()).padStart(2, '0')
+    + String(ts.getMinutes()).padStart(2, '0')
+    + String(ts.getSeconds()).padStart(2, '0');
+  return 'cc-console-message-' + (chatPanelPid || 'session') + '-' + stamp + '-' + idx + '.md';
+}
+
+function detectMarkdownPayload(text) {
+  if (!text || isAnnotationOnly(text)) return false;
+  var t = stripAnsi(text).trim();
+  if (!t) return false;
+  if (/```[\s\S]*?```/.test(t)) return true;
+  if (t.length < 80) return false;
+  var score = 0;
+  if (/^#{1,6}\s+\S/m.test(t)) score++;
+  if (/^(?:[-*]\s+|\d+\.\s+)/m.test(t)) score++;
+  if (/^\|.+\|\s*\n\|[\s:?|-]+\|/m.test(t)) score++;
+  if (/^>\s+/m.test(t)) score++;
+  if (/\[[^\]]+\]\([^)]+\)/.test(t)) score++;
+  if (/^(---|\*\*\*|___)$/m.test(t)) score++;
+  if (/\n {4}\S/.test(t)) score++;
+  return score >= 2;
+}
+
+function markdownForSave(text) {
+  return stripAnsi(text || '').trim() + '\n';
+}
+
+function renderMessageBubble(item) {
+  var m = item.message;
+  var role = m.role;
+  if (role === 'command') {
+    // last-prompt 已不再进入消息流；旧缓存/旧后端返回时也隐藏，避免重复显示用户输入。
+    return '';
+  }
+  if (role === 'user' && isAnnotationOnly(m.content || '')) {
+    return '<div class="chat-msg chat-msg-event">' + formatRichContent(m.content || '') + '</div>';
+  }
+  var cls = role === 'user' ? 'chat-msg-user' : 'chat-msg-assistant';
+  var label = role === 'user' ? '📝 用户' : '🤖 助手';
+  var top = '<span class="chat-msg-label">' + label + '</span>';
+  if (detectMarkdownPayload(m.content || '')) {
+    var id = 'md-' + item.index;
+    markdownDownloads[id] = { filename: markdownSuggestedFilename(m, item.index), content: markdownForSave(m.content || '') };
+    top = '<div class="chat-msg-top"><span class="chat-msg-label">' + label + '</span>'
+      + '<button class="chat-msg-download-btn" title="保存为 Markdown 文件" onclick="downloadMarkdownMessage(\'' + escAttr(id) + '\')">'
+      + '<svg class="chat-msg-download-icon" viewBox="0 0 24 24" aria-hidden="true">'
+      + '<path d="M12 3v11"></path><path d="M7.5 9.5 12 14l4.5-4.5"></path><path d="M5 19h14"></path>'
+      + '</svg><span>下载md文件</span></button></div>';
+  }
+  return '<div class="chat-msg ' + cls + '">' + top + formatRichContent(m.content || '') + '</div>';
+}
+
+function renderOrphanToolResult(m) {
+  var rt = m.content || '';
+  if (rt.length > 6000) rt = rt.slice(0, 6000) + '\n... (结果过长，已截断)';
+  return '<div class="chat-msg chat-msg-tool-result">'
+    + '<span class="chat-msg-label">📋 工具结果' + (m.isError ? ' · 失败' : '') + '</span>'
+    + formatRichContent(rt)
+    + '</div>';
 }
 
 // ---- Markdown 格式化 ----
@@ -1286,10 +1902,15 @@ function grabTag(content, tag) {
   return m ? m[1].replace(/^\n+|\n+$/g, '') : '';
 }
 
-// renderCommandCard 渲染斜杠命令卡片（已合并 name + args）。
+// renderCommandCard 渲染斜杠命令卡片。command-body 默认折叠，避免 skill/命令展开内容占满屏幕。
 function renderCommandCard(o) {
   var line = (o.n || '') + (o.a ? (' ' + o.a) : '');
-  return '<div class="cc-cmd"><span class="cc-cmd-icon">⌘</span><code>' + escHtml(line) + '</code></div>';
+  var html = '<div class="cc-cmd-card"><div class="cc-cmd"><span class="cc-cmd-icon">⌘</span><code>' + escHtml(line) + '</code></div>';
+  if (o.b) {
+    html += '<details class="cc-cmd-detail"><summary>展开命令内容</summary><pre class="cc-cmd-body">' + escHtml(o.b) + '</pre></details>';
+  }
+  html += '</div>';
+  return html;
 }
 
 // renderTask 渲染任务通知：解析内嵌 status/summary。
@@ -1332,11 +1953,11 @@ function renderBlock(name, content) {
 function formatRichContent(text) {
   if (!text) return '';
   text = stripAnsi(text);
-  // 先合并斜杠命令三件套 name(+message)(+args) 为一个命令卡片标记（\u0000CMD{json}\u0000），
-  // 这样三件套收成一张卡片，而不是三个零散块。
+  // 先合并斜杠命令 name(+message)(+args)(+body) 为一个命令卡片标记（\u0000CMD{json}\u0000），
+  // command-body 默认折叠，避免 /skill 展开的完整 prompt 占满消息流。
   text = text.replace(
-    /<command-name>([\s\S]*?)<\/command-name>\s*(?:<command-message>[\s\S]*?<\/command-message>\s*)?(?:<command-args>([\s\S]*?)<\/command-args>\s*)?/g,
-    function (_, n, a) { return '\u0000CMD' + JSON.stringify({ n: n.trim(), a: (a || '').trim() }) + '\u0000'; }
+    /<command-name>([\s\S]*?)<\/command-name>\s*(?:<command-message>[\s\S]*?<\/command-message>\s*)?(?:<command-args>([\s\S]*?)<\/command-args>\s*)?(?:<command-body>([\s\S]*?)<\/command-body>\s*)?/g,
+    function (_, n, a, b) { return '\u0000CMD' + JSON.stringify({ n: n.trim(), a: (a || '').trim(), b: (b || '').replace(/^\n+|\n+$/g, '') }) + '\u0000'; }
   );
   var html = '';
   var i = 0;
@@ -1779,6 +2400,35 @@ window.handleShowWin = async function(pid) {
   }
 };
 
+window.handleCloseSession = async function(e, pid) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if (closingPids[pid]) return;
+  var meta = instanceMeta[pid] || {};
+  var title = meta.topic || ('PID ' + pid);
+  var msg = '确定要关闭这个 Claude Code 会话吗？\n\n'
+    + title + '\nPID ' + pid + '\n\n'
+    + '确认后会先终止对应 Claude Code 进程，然后尽量关闭对应的终端窗口。'
+    + '\n如果终端宿主可能是 Windows Terminal 多标签或 IDE 共享窗口，会为了安全保留。';
+  if (!confirm(msg)) return;
+  closingPids[pid] = true;
+  sessionTabsSig = '';
+  renderSessionTabs();
+  try {
+    var resultMsg = await Call.ByID(ID_ACT_CLOSE_INSTANCE, pid);
+    flashFoot('🛑  ' + (resultMsg || ('已关闭 PID ' + pid + ' 的 Claude Code')));
+    await refresh();
+  } catch (err) {
+    alert('关闭失败: ' + (err && err.message ? err.message : err));
+  } finally {
+    delete closingPids[pid];
+    sessionTabsSig = '';
+    renderSessionTabs();
+  }
+};
+
 // ---- Chat Panel ----
 
 window.openChatPanel = async function(pid) {
@@ -1788,6 +2438,10 @@ window.openChatPanel = async function(pid) {
   chatHistoryIdx = -1; // 打开新会话重置导航索引，从头开始
   lastReplySignature = '';
   currentLiveAsk = null;
+  syncChatChangePanelVisibilityFromPrefs(pid);
+  highlightedChangeId = '';
+  lastChatRenderModel = { items: [], changes: [] };
+  markdownDownloads = {};
   procReset();
   loadSlashSuggestions(pid); // 预载斜杠命令/技能供消息框补全
   // 注意:不重置 ask 多问追踪状态——用户可能关闭面板后重开,中途的多问进度
@@ -1795,7 +2449,7 @@ window.openChatPanel = async function(pid) {
 
   // 标题显示当前会话主题（或回退到 PID）
   var meta = instanceMeta[pid];
-  var topic = (meta && meta.topic) ? meta.topic : ('PID ' + pid);
+  var topic = (meta && meta.topic) ? meta.topic : ('<新会话>');
   document.getElementById("chat-title").textContent = topic;
   var modelEl = document.getElementById("chat-model");
   if (meta && meta.model) {
@@ -1819,11 +2473,19 @@ window.openChatPanel = async function(pid) {
   }
 
   document.getElementById("chat-messages").innerHTML = '<div class="chat-empty">加载中...</div>';
-  var draftKey = pid + '|' + (meta && meta.cwd ? meta.cwd : '');
+  var draftKey = chatSessionKey(pid);
   document.getElementById("chat-input").value = chatDrafts[draftKey] || "";
-  document.getElementById("chat-overlay").classList.remove("hidden");
+  if (viewMode === 'chat') {
+    // 内联模式：dialog 已在 #chat-pane（永不单独 hidden），隐藏空态覆盖层即可露出 dialog
+    document.getElementById("chat-pane-empty").classList.add("hidden");
+  } else {
+    document.getElementById("chat-overlay").classList.remove("hidden");
+  }
   document.getElementById("chat-input").focus();
+  bindChatChangeResizer();
+  applyChatChangePanelWidth();
 
+  queueChatScrollRestore(pid);
   await refreshChatMessages(pid);
   renderChatStats(pid);
 
@@ -2117,7 +2779,7 @@ function renderChatStats(pid) {
   // 主题：与 instanceMeta 对比，不一致时更新（新会话获得主题、/clear 后主题变更）
   var titleEl = document.getElementById("chat-title");
   if (titleEl) {
-    var topic = (inst && inst.topic) ? inst.topic : ('PID ' + pid);
+    var topic = (inst && inst.topic) ? inst.topic : ('<新会话>');
     if (titleEl.textContent !== topic) titleEl.textContent = topic;
   }
 
@@ -2144,7 +2806,32 @@ function renderChatStats(pid) {
   var u = usageState;
   var show = u && u.available && (u.provider === "glm" || u.provider === "deepseek");
   if (!show) {
+    // 不可用/不支持时不仅要隐藏整组，还要清掉上一次 provider 留下的 DOM 状态，
+    // 避免从 GLM/DeepSeek 切到其他供应商后右下角残留旧配额文案/tooltip/显示样式。
     if (usageGroup) usageGroup.classList.add("hidden");
+    if (labelEl) labelEl.textContent = "";
+    if (barEl) {
+      barEl.style.display = "";
+      barEl.innerHTML = "";
+      barEl.className = "ctx-progress";
+      barEl.removeAttribute("title");
+    }
+    if (pctEl) {
+      pctEl.textContent = "";
+      pctEl.className = "context-pct";
+      pctEl.removeAttribute("title");
+    }
+    if (resetEl) {
+      resetEl.textContent = "";
+      resetEl.style.display = "";
+      resetEl.removeAttribute("title");
+    }
+    if (weeklyEl) weeklyEl.style.display = "none";
+    if (weeklyPctEl) {
+      weeklyPctEl.textContent = "";
+      weeklyPctEl.className = "context-pct";
+    }
+    if (weeklyResetEl) weeklyResetEl.textContent = "";
   } else if (usageGroup) {
     usageGroup.classList.remove("hidden");
     if (u.provider === "glm") {
@@ -2182,19 +2869,33 @@ function renderChatStats(pid) {
   }
 }
 
-window.closeChatPanel = function() {
-  document.getElementById("chat-overlay").classList.add("hidden");
+window.closeChatPanel = function(opts) {
+  opts = opts || {};
+  saveChatScrollPosition(chatPanelPid);
+  if (viewMode === 'chat') {
+    // 内联切换会话时不显示空态，避免右栏闪一下；真正关闭/实例退出时才显示空态。
+    if (!opts.keepPane) document.getElementById("chat-pane-empty").classList.remove("hidden");
+  } else {
+    document.getElementById("chat-overlay").classList.add("hidden");
+  }
   document.getElementById("chat-waiting").classList.add("hidden");
   document.getElementById("chat-quick-replies").classList.add("hidden");
   document.getElementById("chat-processing").classList.add("hidden");
   hideChatHint();
   hideSlash();
   chatPanelPid = null;
+  pendingChatScrollRestore = null;
   chatHistoryHash = 0;
   lastChatMessages = [];
   chatHistoryIdx = -1; // 关面板重置导航索引，避免串到下一个会话
   lastReplySignature = '';
   currentLiveAsk = null;
+  highlightedChangeId = '';
+  lastChatRenderModel = { items: [], changes: [] };
+  markdownDownloads = {};
+  renderChangePanel([]);
+  var resizer = document.getElementById('chat-change-resizer');
+  if (resizer) resizer.classList.add('hidden');
   procReset();
   askCustomPending = false; // 关面板清掉自定义输入态
   // 不重置 ask 多问追踪(保留中途进度,重开面板可续上)
@@ -2281,70 +2982,142 @@ function isChatNearBottom() {
   return body.scrollHeight - body.scrollTop - body.clientHeight < 80;
 }
 
+function renderChangePanel(changes) {
+  changes = changes || [];
+  var panel = document.getElementById('chat-change-panel');
+  var btn = document.getElementById('chat-change-toggle-btn');
+  var resizer = document.getElementById('chat-change-resizer');
+  if (!panel || !btn) return;
+  if (changes.length === 0) {
+    panel.classList.add('hidden');
+    if (resizer) resizer.classList.add('hidden');
+    btn.classList.add('hidden');
+    btn.textContent = '修改';
+    return;
+  }
+  btn.classList.remove('hidden');
+  btn.textContent = (chatChangePanelVisible ? '隐藏修改' : '显示修改') + ' · ' + changes.length;
+  panel.classList.toggle('hidden', !chatChangePanelVisible);
+  if (resizer) resizer.classList.toggle('hidden', !chatChangePanelVisible);
+  repositionChatChangeResizer();
+  if (!chatChangePanelVisible) return;
+  applyChatChangePanelWidth();
+
+  var byFile = {};
+  var order = [];
+  for (var i = 0; i < changes.length; i++) {
+    var c = changes[i];
+    var fp = c.filePath || '未知文件';
+    if (!byFile[fp]) { byFile[fp] = []; order.push(fp); }
+    byFile[fp].push(c);
+  }
+  var html = '<div class="chat-change-header"><span>文件修改</span><span>' + order.length + ' 文件 · ' + changes.length + ' 处</span></div>'
+    + '<div class="chat-change-list">';
+  for (var f = 0; f < order.length; f++) {
+    var file = order[f];
+    html += '<section class="chat-change-file"><div class="chat-change-file-title" title="' + escAttr(file) + '">📄 ' + escHtml(file) + '</div>';
+    var list = byFile[file];
+    for (var j = 0; j < list.length; j++) {
+      var ch = list[j];
+      html += '<article class="chat-change-entry' + (highlightedChangeId === ch.id ? ' active' : '') + '" id="' + escAttr(ch.id) + '">'
+        + '<div class="chat-change-entry-head">'
+        + '<span class="chat-change-tool">' + escHtml(ch.tool) + '</span>'
+        + '<span class="chat-change-summary">' + escHtml(ch.summary || '') + '</span>'
+        + '</div>'
+        + '<div class="chat-change-preview">' + (ch.previewHTML || '') + '</div>'
+        + '</article>';
+    }
+    html += '</section>';
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+}
+
+window.toggleChatChangePanel = function() {
+  setChatChangePanelVisibility(!chatChangePanelVisible);
+  renderChangePanel((lastChatRenderModel && lastChatRenderModel.changes) || []);
+};
+
+window.focusChange = function(id) {
+  if (!id) return;
+  highlightedChangeId = id;
+  setChatChangePanelVisibility(true);
+  renderChangePanel((lastChatRenderModel && lastChatRenderModel.changes) || []);
+  setTimeout(function() {
+    var panel = document.getElementById('chat-change-panel');
+    var el = document.getElementById(id);
+    if (panel && el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.add('flash');
+      setTimeout(function() { el.classList.remove('flash'); }, 1200);
+    }
+  }, 0);
+};
+
+window.downloadMarkdownMessage = async function(id) {
+  var item = markdownDownloads[id];
+  if (!item) return;
+  try {
+    var saved = await Call.ByID(ID_SAVE_TEXT_FILE, item.filename, item.content);
+    if (saved) flashFoot('✓ Markdown 已保存到 ' + saved);
+    else flashFoot('已取消保存 Markdown');
+  } catch (e) {
+    flashFoot('保存 Markdown 失败: ' + (e && e.message ? e.message : e));
+  }
+};
+
 function renderChatMessages(messages) {
   lastChatMessages = messages || [];
+  markdownDownloads = {};
   var container = document.getElementById("chat-messages");
-  // 建 toolId → tool_result 索引：tool_use 渲染时把配对的 result 合并进同一卡片
-  var resultByToolId = {};
-  for (var p = 0; p < messages.length; p++) {
-    if (messages[p].role === 'tool_result' && messages[p].toolId) {
-      resultByToolId[messages[p].toolId] = messages[p];
-    }
-  }
-  var consumedToolIds = {}; // 已被 tool_use 卡片消费的 result，轮到它时跳过
+  var renderModel = buildChatRenderModel(lastChatMessages);
+  lastChatRenderModel = renderModel;
   var html = '';
-  for (var i = 0; i < messages.length; i++) {
-    var m = messages[i];
-    switch (m.role) {
-    case 'user':
-      // 纯注解消息（斜杠命令 / 系统提示 / 任务通知）渲染为居中事件行，不做左右气泡
-      if (isAnnotationOnly(m.content || '')) {
-        html += '<div class="chat-msg chat-msg-event">' + formatRichContent(m.content || '') + '</div>';
-      } else {
-        html += '<div class="chat-msg chat-msg-user">'
-          + '<span class="chat-msg-label">📝 用户</span>'
-          + formatRichContent(m.content || '')
-          + '</div>';
-      }
+  var items = renderModel.items || [];
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    switch (item.kind) {
+    case 'message':
+      html += renderMessageBubble(item);
       break;
-    case 'assistant':
-      html += '<div class="chat-msg chat-msg-assistant">'
-        + '<span class="chat-msg-label">🤖 助手</span>'
-        + formatRichContent(m.content || '')
-        + '</div>';
+    case 'command':
+      html += renderMessageBubble(item);
       break;
-    case 'tool_use':
-      var matched = (m.toolId && resultByToolId[m.toolId]) ? resultByToolId[m.toolId] : null;
-      if (matched) consumedToolIds[m.toolId] = true;
-      html += renderToolCard(m, matched);
+    case 'tool':
+      html += renderToolCardWithChange(item);
+      break;
+    case 'tool_group':
+      html += renderToolGroupCard(item);
       break;
     case 'tool_result':
-      // 已被 tool_use 卡片消费 → 跳过；孤儿（无对应 tool_use）→ 回退独立气泡兜底
-      if (m.toolId && consumedToolIds[m.toolId]) break;
-      var rt = m.content || '';
-      if (rt.length > 6000) rt = rt.slice(0, 6000) + '\n... (结果过长，已截断)';
-      html += '<div class="chat-msg chat-msg-tool-result">'
-        + '<span class="chat-msg-label">📋 工具结果' + (m.isError ? ' · 失败' : '') + '</span>'
-        + formatRichContent(rt)
-        + '</div>';
+      html += renderOrphanToolResult(item.message);
       break;
     }
   }
-  if (messages.length === 0) {
+  if (lastChatMessages.length === 0) {
     html = '<div class="chat-empty">✨ 发送第一条消息，开始对话吧</div>';
   }
   // 重建前记录滚动状态：仅在用户原本就在底部附近时才跟随到底，否则保留原位置（不打断查看历史）
   var body = container.parentNode;
   var wasNearBottom = isChatNearBottom();
   var prevScrollTop = body ? body.scrollTop : 0;
+  var restore = consumePendingChatScrollRestore();
   container.innerHTML = html;
+  renderChangePanel(renderModel.changes || []);
   // 检测交互式提示并注入快速回复按钮
-  injectInteractivePrompts(messages);
-  if (wasNearBottom) {
+  injectInteractivePrompts(lastChatMessages);
+  if (restore && body) {
+    if (restore.wasNearBottom) {
+      body.scrollTop = body.scrollHeight;
+    } else {
+      body.scrollTop = Math.max(0, Math.min(restore.scrollTop || 0, body.scrollHeight - body.clientHeight));
+    }
+  } else if (wasNearBottom && body) {
     body.scrollTop = body.scrollHeight;
   } else if (body) {
     body.scrollTop = prevScrollTop; // 新消息追加在末尾，保持原位置仍指向之前的内容
   }
+  applyChatChangePanelWidth();
 }
 
 window.sendChatMessage = async function() {
@@ -2687,7 +3460,7 @@ var NO_CONFIRM_TOOLS = {
   'Read': 1, 'Grep': 1, 'Glob': 1, 'LS': 1, 'LSP': 1, 'NotebookRead': 1,
   'WebSearch': 1, 'WebFetch': 1,
   // 任务管理（自动批准）
-  'TodoWrite': 1, 'Task': 1, 'Agent': 1,
+  'TodoWrite': 1, 'Task': 1, 'Agent': 1, 'Skill': 1, 'Workflow': 1,
   'TaskCreate': 1, 'TaskUpdate': 1, 'TaskGet': 1, 'TaskList': 1,
   'TaskOutput': 1, 'TaskStop': 1,
   // 定时任务（内部）
@@ -3011,11 +3784,48 @@ function finishAskInteraction() {
 }
 
 // ---- 消息框草稿：按 pid+cwd 存储，关闭面板后保留，发送后清除 ----
-function chatDraftKey() {
-  if (!chatPanelPid) return null;
-  var meta = instanceMeta[chatPanelPid];
+function chatSessionKey(pid) {
+  var targetPid = pid || chatPanelPid;
+  if (!targetPid) return null;
+  var meta = instanceMeta[targetPid];
   var cwd = (meta && meta.cwd) ? meta.cwd : '';
-  return chatPanelPid + '|' + cwd;
+  return targetPid + '|' + cwd;
+}
+
+function chatDraftKey() {
+  return chatSessionKey(chatPanelPid);
+}
+
+function saveChatScrollPosition(pid) {
+  var key = chatSessionKey(pid);
+  var body = document.querySelector(".chat-body");
+  if (!key || !body) return;
+  chatScrollPositions[key] = {
+    scrollTop: body.scrollTop,
+    wasNearBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 80
+  };
+}
+
+function queueChatScrollRestore(pid) {
+  var key = chatSessionKey(pid);
+  if (!key) { pendingChatScrollRestore = null; return; }
+  pendingChatScrollRestore = { key: key, state: chatScrollPositions[key] || { scrollTop: 0, wasNearBottom: true } };
+}
+
+function bindChatChangeResizer() {
+  var resizer = document.getElementById('chat-change-resizer');
+  if (!resizer || resizer.dataset.bound === '1') return;
+  resizer.dataset.bound = '1';
+  resizer.addEventListener('mousedown', startChatChangeResize);
+}
+
+function consumePendingChatScrollRestore() {
+  if (!pendingChatScrollRestore) return null;
+  var key = chatSessionKey(chatPanelPid);
+  if (!key || pendingChatScrollRestore.key !== key) return null;
+  var state = pendingChatScrollRestore.state;
+  pendingChatScrollRestore = null;
+  return state;
 }
 
 function saveChatDraft() {
@@ -3305,7 +4115,6 @@ document.addEventListener("keydown", function(e) {
 
   var promptOverlay = document.getElementById("prompt-overlay");
   var settingsOverlay = document.getElementById("settings-overlay");
-  var chatOverlay = document.getElementById("chat-overlay");
 
   // 设置：Escape 关闭
   if (!settingsOverlay.classList.contains("hidden") && e.key === "Escape") {
@@ -3316,9 +4125,15 @@ document.addEventListener("keydown", function(e) {
   // 聊天面板：可配置发送键，Ctrl/Cmd+Enter 始终发送，Escape 关闭
   // sendOnEnter=true  → 回车发送、Shift+回车换行
   // sendOnEnter=false → 回车换行、Shift+回车发送
-  if (!chatOverlay.classList.contains("hidden")) {
+  if (chatPanelPid !== null) {
     if (e.key === "Escape") {
-      closeChatPanel();
+      if (viewMode === 'chat') {
+        // chat 布局下对话常驻右栏，Esc 不清空选中（否则会被 refresh 自动重选），改为输入框失焦
+        var ci = document.getElementById("chat-input");
+        if (ci) ci.blur();
+      } else {
+        closeChatPanel();
+      }
       return;
     }
     if (e.key === "Enter" && shouldSendOnEnter(e)) {
@@ -3408,11 +4223,14 @@ window.showSettings = async function() {
     var sendToggle = document.getElementById("toggle-enter-to-send");
     if (sendToggle) sendToggle.checked = !!s.enterToSend;
     var yoloToggle = document.getElementById("toggle-launch-yolo");
-    if (yoloToggle) yoloToggle.checked = !!s.launchYolo;
+    launchYoloSetting = s.launchYolo !== false;
+    if (yoloToggle) yoloToggle.checked = launchYoloSetting;
     var autoCheckToggle = document.getElementById("toggle-auto-check-claude-settings");
     if (autoCheckToggle) autoCheckToggle.checked = s.autoCheckClaudeSettings !== false;
     var autoRepairToggle = document.getElementById("toggle-auto-repair-claude-settings");
     if (autoRepairToggle) autoRepairToggle.checked = s.autoRepairClaudeSettings !== false;
+    var subtitleToggle = document.getElementById("toggle-show-session-subtitle");
+    if (subtitleToggle) subtitleToggle.checked = s.showSessionSubtitle !== false;
     autoCheckClaudeSettings = s.autoCheckClaudeSettings !== false;
     autoRepairClaudeSettings = s.autoRepairClaudeSettings !== false;
     updateClaudeSettingsToggleState();
@@ -3443,7 +4261,8 @@ window.saveSetting = async function(key, val) {
   var autoStart = document.getElementById("toggle-auto-start").checked;
   var launchMode = document.getElementById("select-launch-mode").value;
   var enterToSend = document.getElementById("toggle-enter-to-send").checked;
-  var launchYolo = document.getElementById("toggle-launch-yolo").checked;
+  var launchYoloEl = document.getElementById("toggle-launch-yolo");
+  var launchYolo = launchYoloEl ? launchYoloEl.checked : launchYoloSetting;
   var autoCheck = document.getElementById("toggle-auto-check-claude-settings").checked;
   var autoRepairEl = document.getElementById("toggle-auto-repair-claude-settings");
   if (key === "autoCheckClaudeSettings" && !autoCheck && autoRepairEl) autoRepairEl.checked = false;
@@ -3451,6 +4270,7 @@ window.saveSetting = async function(key, val) {
   var autoRepair = autoRepairEl ? autoRepairEl.checked : false;
   try {
     await Call.ByID(ID_SAVE_SETTINGS, closeQuits, autoStart, launchMode, enterToSend, launchYolo, autoCheck, autoRepair);
+    launchYoloSetting = !!launchYolo;
     autoCheckClaudeSettings = !!autoCheck;
     autoRepairClaudeSettings = !!autoRepair;
     updateClaudeSettingsToggleState();
@@ -3472,7 +4292,7 @@ window.saveSetting = async function(key, val) {
     if (key === "closeQuits") document.getElementById("toggle-close-quits").checked = !val;
     else if (key === "autoStart") document.getElementById("toggle-auto-start").checked = !val;
     else if (key === "enterToSend") document.getElementById("toggle-enter-to-send").checked = !val;
-    else if (key === "launchYolo") document.getElementById("toggle-launch-yolo").checked = !val;
+    else if (key === "launchYolo" && document.getElementById("toggle-launch-yolo")) document.getElementById("toggle-launch-yolo").checked = !val;
     else if (key === "autoCheckClaudeSettings") document.getElementById("toggle-auto-check-claude-settings").checked = !val;
     else if (key === "autoRepairClaudeSettings") document.getElementById("toggle-auto-repair-claude-settings").checked = !val;
     updateClaudeSettingsToggleState();

@@ -14,6 +14,8 @@ type ConsoleInput interface {
 	SendAskAnswer(pid int, actions string) error
 	// ShowWindow 将目标实例所在的终端窗口置前。
 	ShowWindow(pid int) error
+	// CloseInstance 关闭目标 Claude Code 进程，并尽量关闭其独立终端窗口。
+	CloseInstance(pid int) (string, error)
 }
 
 // Injector 是当前平台的控制台注入实现，由各平台的 inject_*.go 在 init() 中设置。

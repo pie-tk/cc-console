@@ -49,13 +49,14 @@ func runWailsApp() {
 	// 读取已保存的窗口几何，恢复用户上次的缩放大小（无记录或损坏时用默认值）
 	geo := monitor.GetWindowGeometry()
 	winOpts := application.WebviewWindowOptions{
-		Title:            "CC Console",
-		Width:            1442,
-		Height:           960,
-		MinWidth:         660,
-		MinHeight:        420,
-		BackgroundColour: application.NewRGB(255, 255, 255),
-		URL:              "/",
+		Title:                      "CC Console",
+		Width:                      1442,
+		Height:                     960,
+		MinWidth:                   660,
+		MinHeight:                  420,
+		BackgroundColour:           application.NewRGB(255, 255, 255),
+		DefaultContextMenuDisabled: true,
+		URL:                        "/",
 	}
 	if geo.Ok && !geo.Maximised {
 		winOpts.Width = geo.Width

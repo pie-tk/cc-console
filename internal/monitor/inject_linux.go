@@ -22,6 +22,14 @@ func (s *linuxStubInjector) SendPrompt(pid int, text string) error {
 	return fmt.Errorf("Linux 控制台注入尚未实现")
 }
 
+func (s *linuxStubInjector) SendAskAnswer(pid int, actions string) error {
+	return fmt.Errorf("Linux 控制台注入尚未实现")
+}
+
 func (s *linuxStubInjector) ShowWindow(pid int) error {
 	return fmt.Errorf("Linux 窗口置前尚未实现")
+}
+
+func (s *linuxStubInjector) CloseInstance(pid int) (string, error) {
+	return "", fmt.Errorf("Linux 关闭实例尚未实现")
 }

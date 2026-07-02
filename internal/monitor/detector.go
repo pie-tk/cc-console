@@ -167,6 +167,7 @@ func Detect() (live []Instance, stale []Instance, err error) {
 			UpdatedAt:      inst.UpdatedAt,
 			TranscriptPath: inst.TranscriptPath,
 		}
+		inst.WaitingKind = detectInstanceWaitingKind(si, inst.WaitingKind)
 		cacheMu.Lock()
 		lastInstanceByPid[p.pid] = si
 		cacheMu.Unlock()
@@ -300,6 +301,28 @@ func isExcludedChild(cmd string) bool {
 		strings.Contains(cmd, "cc-console-sl")
 }
 
+// liveModelName 返回 live 记录里可用于展示的模型名：优先显示名，缺失时退回 modelId。
+// 某些 statusline 刷新会间歇性丢 display_name；此时至少保留可识别的真实模型 ID。
+func liveModelName(rec LiveRecord) string {
+	if rec.Model != "" {
+		return rec.Model
+	}
+	return rec.ModelID
+}
+
+// liveModelLimit 返回 live 记录对应的上下文上限：优先使用 statusline 原生值，
+// 缺失时按真实 modelId 推断，最后才退回 display name。
+// 这样可避免 "Sonnet 4.6" 这类展示名查表失败后误回退到默认 200K。
+func liveModelLimit(rec LiveRecord) int64 {
+	if rec.ContextLimit > 0 {
+		return rec.ContextLimit
+	}
+	if rec.ModelID != "" {
+		return ModelContextLimit(rec.ModelID)
+	}
+	return ModelContextLimit(rec.Model)
+}
+
 // buildInstanceFromLive 用 statusline 桥接的实时数据构建实例(live 文件新鲜)。
 // 这是 2.1.177+ 的主路径:数据实时、归属准确(transcriptPath 来自官方)。
 func buildInstanceFromLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int64) Instance {
@@ -320,19 +343,15 @@ func buildInstanceFromLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int64) I
 	if rec.Cwd != "" {
 		inst.Cwd = rec.Cwd
 	}
-	if rec.Model != "" {
-		inst.Model = rec.Model
+	if liveModelName(rec) != "" {
+		inst.Model = liveModelName(rec)
 	}
 	if rec.SessionName != "" {
 		inst.Topic = rec.SessionName // statusline 的 session_name(jsonl 未落盘时的实时主题)
 	}
 	inst.ContextTokens = rec.ContextTokens
 	inst.ContextPercent = rec.ContextPercent
-	if rec.ContextLimit > 0 {
-		inst.ContextLimit = rec.ContextLimit
-	} else {
-		inst.ContextLimit = ModelContextLimit(inst.Model)
-	}
+	inst.ContextLimit = liveModelLimit(rec)
 	if rec.Version != "" {
 		inst.Version = rec.Version
 	}
@@ -350,8 +369,9 @@ func buildInstanceFromLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int64) I
 }
 
 // buildInstanceFromStaleLive 处理 live 文件存在但不新鲜的实例(idle 会话)。
-// 实时 token/cost 已过期(前端不展示实时数字),但归属信息(sessionId/transcriptPath)
-// 仍然有效——用它读 jsonl 历史,避免 matchSession 把同 cwd 的旧会话错配到最新会话。
+// 归属信息(sessionId/transcriptPath)仍然有效——用它读 jsonl 历史,避免 matchSession
+// 把同 cwd 的旧会话错配到最新会话。context 用 JSONL 优先；若活跃会话不落盘导致
+// JSONL 解析不到 usage,则保留 statusline 最后一次上报的 context,避免 idle 后显示为 "—"。
 func buildInstanceFromStaleLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int64) Instance {
 	si := &SessionInfo{
 		Pid:            p.pid,
@@ -368,11 +388,25 @@ func buildInstanceFromStaleLive(p claudeProc, rec LiveRecord, mtimeMs, nowMs int
 	if rec.Cwd != "" {
 		inst.Cwd = rec.Cwd
 	}
-	if rec.Model != "" {
-		inst.Model = rec.Model
+	if liveModelName(rec) != "" {
+		inst.Model = liveModelName(rec)
+		inst.ContextLimit = liveModelLimit(rec)
 	}
 	if rec.Version != "" {
 		inst.Version = rec.Version
+	}
+	// 活跃 Claude Code 会话在 idle 后可能不会把最后一轮 usage 及时写回 JSONL。
+	// 这类会话通过 stale live 仍能拿到 statusline 最后一次有效 context；仅在
+	// JSONL 没有 context 时兜底,避免把已知用量覆盖成 0/"—"。
+	if inst.ContextTokens <= 0 && rec.ContextTokens > 0 {
+		inst.ContextTokens = rec.ContextTokens
+		inst.ContextPercent = rec.ContextPercent
+		if rec.ContextLimit > 0 {
+			inst.ContextLimit = rec.ContextLimit
+		}
+		inst.CostUsd = rec.CostUsd
+		inst.DurationMs = rec.DurationMs
+		inst.HasConversation = true
 	}
 	si.Status = inst.Status
 	return inst
@@ -399,6 +433,23 @@ func buildInstanceFallback(p claudeProc, sessionsByCwd map[string][]sessionMeta,
 	inst.Live = false
 	si.Status = inst.Status
 	return inst
+}
+
+func detectInstanceWaitingKind(si *SessionInfo, fallback string) string {
+	if si == nil || si.Pid <= 0 {
+		return fallback
+	}
+	if _, ok := ReadAsk(si.Pid); ok {
+		return "ask"
+	}
+	// buildInstance 初读 JSONL 时 status 还未经过 fusedStatus，permission 等待需用最终状态重算。
+	if si.Status == "idle" || fallback == "ask" || fallback == "plan" {
+		result := GetChatHistory(si)
+		if kind := DetectPendingInteraction(result.Messages, si.Status); kind != "" {
+			return kind
+		}
+	}
+	return ""
 }
 
 // GetStats 返回当前实例的统计摘要。
@@ -542,6 +593,7 @@ func buildInstance(pid int, s *SessionInfo) Instance {
 		inst.LastReplySnip = d.lastReplySnip
 		inst.Turns = d.turns
 		inst.LastTool = d.lastTool
+		inst.WaitingKind = d.waitingKind
 		inst.History = d.history
 		inst.HistoryHash = d.historyHash
 	}

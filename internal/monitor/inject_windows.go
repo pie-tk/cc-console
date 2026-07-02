@@ -39,19 +39,20 @@ var (
 
 	user32DLL = syscall.NewLazyDLL("user32.dll")
 
-	procGetAncestor            = user32DLL.NewProc("GetAncestor")
-	procShowWindow             = user32DLL.NewProc("ShowWindow")
-	procSetForegroundWindow    = user32DLL.NewProc("SetForegroundWindow")
-	procEnumWindows            = user32DLL.NewProc("EnumWindows")
+	procGetAncestor              = user32DLL.NewProc("GetAncestor")
+	procShowWindow               = user32DLL.NewProc("ShowWindow")
+	procSetForegroundWindow      = user32DLL.NewProc("SetForegroundWindow")
+	procEnumWindows              = user32DLL.NewProc("EnumWindows")
 	procGetWindowThreadProcessId = user32DLL.NewProc("GetWindowThreadProcessId")
-	procIsWindowVisible        = user32DLL.NewProc("IsWindowVisible")
-	procAttachThreadInput      = user32DLL.NewProc("AttachThreadInput")
-	procGetCurrentThreadId     = kernel32.NewProc("GetCurrentThreadId")
-	procGetWindowTextLengthW   = user32DLL.NewProc("GetWindowTextLengthW")
+	procIsWindowVisible          = user32DLL.NewProc("IsWindowVisible")
+	procAttachThreadInput        = user32DLL.NewProc("AttachThreadInput")
+	procGetCurrentThreadId       = kernel32.NewProc("GetCurrentThreadId")
+	procGetWindowTextLengthW     = user32DLL.NewProc("GetWindowTextLengthW")
 	procAllowSetForegroundWindow = user32DLL.NewProc("AllowSetForegroundWindow")
-	procGetClassNameW           = user32DLL.NewProc("GetClassNameW")
-	procBringWindowToTop       = user32DLL.NewProc("BringWindowToTop")
-	procGetCurrentProcessId     = kernel32.NewProc("GetCurrentProcessId")
+	procGetClassNameW            = user32DLL.NewProc("GetClassNameW")
+	procBringWindowToTop         = user32DLL.NewProc("BringWindowToTop")
+	procPostMessageW             = user32DLL.NewProc("PostMessageW")
+	procGetCurrentProcessId      = kernel32.NewProc("GetCurrentProcessId")
 )
 
 // ---- Win32 控制台输入记录常量/结构 ----
@@ -68,6 +69,7 @@ const (
 	vkSpace   = 0x20
 	vkTab     = 0x09
 	swRestore = 9 // SW_RESTORE
+	wmClose   = 0x0010
 )
 
 // keyEventRecord 严格对应 Win32 KEY_EVENT_RECORD（16 字节，无填充）。
@@ -447,6 +449,138 @@ func (w *windowsInjector) ShowWindow(pid int) error {
 	return nil
 }
 
+type closeWindowCandidate struct {
+	hwnd uintptr
+	safe bool
+	desc string
+}
+
+func (w *windowsInjector) CloseInstance(pid int) (string, error) {
+	if pid <= 0 {
+		return "", fmt.Errorf("PID 无效")
+	}
+	if processCreateMs(uint32(pid)) == 0 {
+		return "", fmt.Errorf("PID %d 不存在或已退出", pid)
+	}
+	candidate := resolveCloseWindow(uint32(pid)) // 先定位窗口；进程退出后祖先链可能断开
+	if err := terminateProcessTree(uint32(pid)); err != nil {
+		return "", err
+	}
+	time.Sleep(250 * time.Millisecond)
+	if candidate.hwnd == 0 {
+		return fmt.Sprintf("已关闭 PID %d；未找到可关闭的独立终端窗口", pid), nil
+	}
+	if !candidate.safe {
+		return fmt.Sprintf("已关闭 PID %d；终端窗口疑似共享宿主（%s），已保留", pid, candidate.desc), nil
+	}
+	r, _, _ := procPostMessageW.Call(candidate.hwnd, uintptr(wmClose), 0, 0)
+	if r == 0 {
+		return fmt.Sprintf("已关闭 PID %d；终端窗口关闭请求未送达（窗口可能已消失）", pid), nil
+	}
+	return fmt.Sprintf("已关闭 PID %d，并已请求关闭对应终端窗口", pid), nil
+}
+
+func resolveCloseWindow(pid uint32) closeWindowCandidate {
+	_, _, _ = procFreeConsole.Call()
+	r, _, _ := procAttachConsole.Call(uintptr(pid))
+	if r != 0 {
+		r, _, _ = procGetConsoleWindow.Call()
+		hwnd := uintptr(r)
+		if hwnd != 0 {
+			if ro, _, _ := procGetAncestor.Call(hwnd, 3); ro != 0 {
+				hwnd = ro
+			}
+			_, _, _ = procFreeConsole.Call()
+			return classifyCloseWindow(hwnd)
+		}
+		_, _, _ = procFreeConsole.Call()
+	}
+	hwnd := findWindowForPID(pid)
+	if hwnd == 0 {
+		hwnd = reverseFindWindow(pid)
+	}
+	if hwnd == 0 {
+		return closeWindowCandidate{}
+	}
+	return classifyCloseWindow(hwnd)
+}
+
+func classifyCloseWindow(hwnd uintptr) closeWindowCandidate {
+	cls := windowClassName(hwnd)
+	if isConsoleWindowClass(hwnd) {
+		return closeWindowCandidate{hwnd: hwnd, safe: true, desc: cls}
+	}
+	if isCascadiaWindow(hwnd) {
+		return closeWindowCandidate{hwnd: hwnd, safe: false, desc: "Windows Terminal"}
+	}
+	if cls == "" {
+		cls = "未知窗口"
+	}
+	return closeWindowCandidate{hwnd: hwnd, safe: false, desc: cls}
+}
+
+func windowClassName(hwnd uintptr) string {
+	var class [128]uint16
+	procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&class[0])), uintptr(len(class)))
+	return windows.UTF16ToString(class[:])
+}
+
+func terminateProcessTree(root uint32) error {
+	for _, child := range collectDescendants(root) {
+		_ = terminateSingleProcess(child) // 子进程可能已自然退出，忽略并继续关闭主进程
+	}
+	return terminateSingleProcess(root)
+}
+
+func collectDescendants(root uint32) []uint32 {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snapshot)
+	children := map[uint32][]uint32{}
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+	if err := windows.Process32First(snapshot, &pe); err != nil {
+		return nil
+	}
+	for {
+		children[pe.ParentProcessID] = append(children[pe.ParentProcessID], pe.ProcessID)
+		if err := windows.Process32Next(snapshot, &pe); err != nil {
+			break
+		}
+	}
+	var out []uint32
+	var walk func(uint32)
+	walk = func(pid uint32) {
+		for _, child := range children[pid] {
+			walk(child)
+			out = append(out, child)
+		}
+	}
+	walk(root)
+	return out
+}
+
+func terminateSingleProcess(pid uint32) error {
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		if processCreateMs(pid) == 0 {
+			return nil
+		}
+		return fmt.Errorf("打开 PID %d 失败: %w", pid, err)
+	}
+	defer windows.CloseHandle(h)
+	if err := windows.TerminateProcess(h, 1); err != nil {
+		if processCreateMs(pid) == 0 {
+			return nil
+		}
+		return fmt.Errorf("终止 PID %d 失败: %w", pid, err)
+	}
+	_, _ = windows.WaitForSingleObject(h, 1500)
+	return nil
+}
+
 // getParentPID 返回 pid 的父进程 PID，失败返回 0。
 func getParentPID(pid uint32) uint32 {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
@@ -598,9 +732,9 @@ func findTopLevelWindow(pid uint32) uintptr {
 	var result uintptr
 
 	target := &struct {
-		pid    uint32
-		hwnd   uintptr
-		found  bool
+		pid   uint32
+		hwnd  uintptr
+		found bool
 	}{pid: pid}
 
 	cb := syscall.NewCallback(func(hwnd uintptr, lParam uintptr) uintptr {

@@ -29,3 +29,7 @@ func (s *stubInjector) SendAskAnswer(pid int, actions string) error {
 func (s *stubInjector) ShowWindow(pid int) error {
 	return fmt.Errorf("macOS 窗口置前尚未实现")
 }
+
+func (s *stubInjector) CloseInstance(pid int) (string, error) {
+	return "", fmt.Errorf("macOS 关闭实例尚未实现")
+}

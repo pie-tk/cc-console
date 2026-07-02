@@ -31,12 +31,13 @@ type convDetails struct {
 	totalOutputTokens int64
 	totalCacheTokens  int64 // cache_creation + cache_read
 	// 会话动态信息（主题行右侧）
-	lastUserQuery string // 最近一条真实用户提问（排除 tool_result 回显）
-	lastReplySnip string // 最近一条 assistant text 块片段
-	turns         int    // 消息轮数（含 text 块的 user 消息计数）
-	lastTool      string         // 最近使用的工具名（最后一个 tool_use 的 name）
-	history       []HistoryTurn  // 所有 Q&A 轮次（最多 30 轮）
-	historyHash   int            // 对话历史内容哈希，前端用于判断是否需要重建 DOM
+	lastUserQuery string        // 最近一条真实用户提问（排除 tool_result 回显）
+	lastReplySnip string        // 最近一条 assistant text 块片段
+	turns         int           // 消息轮数（含 text 块的 user 消息计数）
+	lastTool      string        // 最近使用的工具名（最后一个 tool_use 的 name）
+	waitingKind   string        // 当前是否等待用户处理：ask / plan / permission
+	history       []HistoryTurn // 所有 Q&A 轮次（最多 30 轮）
+	historyHash   int           // 对话历史内容哈希，前端用于判断是否需要重建 DOM
 }
 
 type convCacheEntry struct {
@@ -144,6 +145,9 @@ func loadConversationDetails(s *SessionInfo) convDetails {
 		return d
 	}
 	parseConversation(data, &d)
+	var hist ChatHistoryResult
+	parseChatHistory(data, &hist)
+	d.waitingKind = DetectPendingInteraction(hist.Messages, s.Status)
 
 	cacheMu.Lock()
 	convCache[path] = convCacheEntry{mtime: mtime, details: d}
@@ -155,9 +159,9 @@ func loadConversationDetails(s *SessionInfo) convDetails {
 func parseConversation(data []byte, d *convDetails) {
 	firstUserSet := false
 	var firstUser string
-	var pendingUser string   // 当前轮次的用户提问
-	var pendingReply string  // 当前轮次累积的助手回复
-	var inTurn bool          // 是否有待完成的轮次
+	var pendingUser string  // 当前轮次的用户提问
+	var pendingReply string // 当前轮次累积的助手回复
+	var inTurn bool         // 是否有待完成的轮次
 
 	finalizeTurn := func() {
 		if inTurn && pendingUser != "" {
@@ -378,6 +382,15 @@ func GetChatHistory(s *SessionInfo) ChatHistoryResult {
 	return result
 }
 
+// rawJSONString 保留 JSON 原文，空值/null 不透传，避免前端拿到无意义字符串。
+func rawJSONString(raw []byte) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	return string(raw)
+}
+
 // parseChatHistory 逐行解析 JSONL，提取所有 content block（text / tool_use / tool_result）。
 func parseChatHistory(data []byte, r *ChatHistoryResult) {
 	turn := 0
@@ -392,48 +405,85 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 		switch {
 		case bytes.Contains(line, []byte(`"type":"assistant"`)):
 			var al struct {
-				Timestamp string `json:"timestamp"`
-				Message struct {
-					Content []struct {
-						Type  string          `json:"type"`
-						Text  string          `json:"text"`
-						Name  string          `json:"name"`
-						ID    string          `json:"id"`
-						Input json.RawMessage `json:"input"`
-					} `json:"content"`
+				Timestamp        string          `json:"timestamp"`
+				AttributionSkill string          `json:"attributionSkill"`
+				ToolUseResult    json.RawMessage `json:"toolUseResult"`
+				Message          struct {
+					Content []json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
 			if json.Unmarshal(line, &al) == nil {
 				ts := parseTsMillis(al.Timestamp)
-				for _, b := range al.Message.Content {
+				toolUseResult := rawJSONString(al.ToolUseResult)
+				for _, rawBlock := range al.Message.Content {
+					var b struct {
+						Type      string          `json:"type"`
+						Text      string          `json:"text"`
+						Name      string          `json:"name"`
+						ID        string          `json:"id"`
+						Input     json.RawMessage `json:"input"`
+						ToolUseID string          `json:"tool_use_id"`
+						Content   json.RawMessage `json:"content"`
+						IsError   bool            `json:"is_error"`
+					}
+					if json.Unmarshal(rawBlock, &b) != nil {
+						continue
+					}
 					switch b.Type {
 					case "text":
 						if b.Text != "" {
-							msgs = append(msgs, ChatMessage{Role: "assistant", Content: b.Text, Turn: turn, Ts: ts})
+							msgs = append(msgs, ChatMessage{
+								Role:             "assistant",
+								Content:          b.Text,
+								Turn:             turn,
+								Ts:               ts,
+								BlockType:        "text",
+								RawContent:       rawJSONString(rawBlock),
+								AttributionSkill: al.AttributionSkill,
+							})
 						}
-					case "tool_use":
-						input := string(b.Input)
+					case "tool_use", "server_tool_use":
+						input := rawJSONString(b.Input)
 						cm := ChatMessage{
-							Role:    "tool_use",
-							Content: input,
-							Tool:    b.Name,
-							ToolID:  b.ID,
-							Turn:    turn,
-							Ts:      ts,
+							Role:             "tool_use",
+							Content:          input,
+							Tool:             b.Name,
+							ToolID:           b.ID,
+							Turn:             turn,
+							Ts:               ts,
+							BlockType:        b.Type,
+							RawContent:       rawJSONString(rawBlock),
+							ToolUseResult:    toolUseResult,
+							AttributionSkill: al.AttributionSkill,
 						}
 						// Edit 工具：读文件定位修改区域起始行号，供前端 diff 显示真实行号
 						if b.Name == "Edit" {
 							cm.EditStartLine = editStartLine(b.Input)
 						}
 						msgs = append(msgs, cm)
+					case "tool_result":
+						msgs = append(msgs, ChatMessage{
+							Role:             "tool_result",
+							Content:          extractToolResultContent(b.Content),
+							ToolID:           b.ToolUseID,
+							IsError:          b.IsError,
+							Turn:             turn,
+							Ts:               ts,
+							BlockType:        "tool_result",
+							RawContent:       rawJSONString(rawBlock),
+							ToolUseResult:    toolUseResult,
+							AttributionSkill: al.AttributionSkill,
+						})
 					}
 				}
 			}
 
 		case bytes.Contains(line, []byte(`"type":"user"`)):
 			var ul struct {
-				Timestamp string `json:"timestamp"`
-				Message struct {
+				Timestamp        string          `json:"timestamp"`
+				AttributionSkill string          `json:"attributionSkill"`
+				ToolUseResult    json.RawMessage `json:"toolUseResult"`
+				Message          struct {
 					Content json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
@@ -441,22 +491,46 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 				continue
 			}
 			ts := parseTsMillis(ul.Timestamp)
+			toolUseResult := rawJSONString(ul.ToolUseResult)
 			blocks := parseContentBlocks(ul.Message.Content)
 			for _, b := range blocks {
 				switch {
 				case b.text != "":
 					turn++
-					msgs = append(msgs, ChatMessage{Role: "user", Content: b.text, Turn: turn, Ts: ts})
+					msgs = append(msgs, ChatMessage{
+						Role:             "user",
+						Content:          b.text,
+						Turn:             turn,
+						Ts:               ts,
+						BlockType:        "text",
+						RawContent:       b.rawContent,
+						AttributionSkill: ul.AttributionSkill,
+					})
 				case b.toolUseID != "":
 					msgs = append(msgs, ChatMessage{
-						Role:    "tool_result",
-						Content: b.content,
-						ToolID:  b.toolUseID,
-						IsError: b.isError,
-						Turn:    turn,
-						Ts:      ts,
+						Role:             "tool_result",
+						Content:          b.content,
+						ToolID:           b.toolUseID,
+						IsError:          b.isError,
+						Turn:             turn,
+						Ts:               ts,
+						BlockType:        "tool_result",
+						RawContent:       b.rawContent,
+						ToolUseResult:    toolUseResult,
+						AttributionSkill: ul.AttributionSkill,
 					})
 				}
+			}
+
+		case bytes.Contains(line, []byte(`"type":"last-prompt"`)):
+			var lp struct {
+				Timestamp  string `json:"timestamp"`
+				LastPrompt string `json:"lastPrompt"`
+			}
+			if json.Unmarshal(line, &lp) == nil && strings.TrimSpace(lp.LastPrompt) != "" {
+				// last-prompt 是 Claude Code 内部记录的最近一次输入/斜杠命令，
+				// 普通 user 消息里已经有同一内容；不追加到消息流，避免对话页重复显示居中的 ⌘ 事件。
+				_ = parseTsMillis(lp.Timestamp)
 			}
 		}
 	}
@@ -467,17 +541,76 @@ func parseChatHistory(data []byte, r *ChatHistoryResult) {
 	}
 
 	r.Messages = msgs
+	r.Hash = chatMessagesHash(msgs)
+}
+
+func chatMessagesHash(msgs []ChatMessage) int {
+	h := 0
 	for _, m := range msgs {
-		r.Hash += len(m.Content)*31 + len(m.Tool)*17 + len(m.ToolID)*13
+		h += len(m.Content)*31 + len(m.Tool)*17 + len(m.ToolID)*13
+		h += len(m.BlockType)*11 + len(m.RawContent)*7 + len(m.ToolUseResult)*5
+		h += len(m.AttributionSkill)*3 + len(m.LastPrompt)*2 + m.EditStartLine
+		if m.IsError {
+			h += 97
+		}
 	}
+	return h
+}
+
+var noConfirmTools = map[string]bool{
+	// 只读 / 查询
+	"Read": true, "Grep": true, "Glob": true, "LS": true, "LSP": true, "NotebookRead": true,
+	"WebSearch": true, "WebFetch": true,
+	// 任务管理（自动批准）
+	"TodoWrite": true, "Task": true, "Agent": true, "Skill": true, "Workflow": true,
+	"TaskCreate": true, "TaskUpdate": true, "TaskGet": true, "TaskList": true,
+	"TaskOutput": true, "TaskStop": true,
+	// 定时任务（内部）
+	"ScheduleWakeup": true, "CronCreate": true, "CronDelete": true, "CronList": true,
+	// 交互类已有专门分支，不走 permission 分支
+	"EnterPlanMode": true, "ExitPlanMode": true, "AskUserQuestion": true,
+}
+
+// DetectPendingInteraction 复刻前端 detectInteraction 的列表态简化版：
+// 看最后一个未配对 tool_use 是否代表需要用户处理的暂停点。
+func DetectPendingInteraction(messages []ChatMessage, status string) string {
+	lastToolUseIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "tool_use" {
+			lastToolUseIdx = i
+			break
+		}
+	}
+	if lastToolUseIdx < 0 {
+		return ""
+	}
+	last := messages[lastToolUseIdx]
+	if last.ToolID != "" {
+		for i := lastToolUseIdx + 1; i < len(messages); i++ {
+			if messages[i].Role == "tool_result" && messages[i].ToolID == last.ToolID {
+				return ""
+			}
+		}
+	}
+	switch last.Tool {
+	case "AskUserQuestion":
+		return "ask"
+	case "ExitPlanMode":
+		return "plan"
+	}
+	if status == "idle" && !noConfirmTools[last.Tool] {
+		return "permission"
+	}
+	return ""
 }
 
 // contentBlock 是 user 消息中的单个 content 块（text 或 tool_result）。
 type contentBlock struct {
-	text      string
-	toolUseID string
-	content   string // tool_result 的实际内容
-	isError   bool   // tool_result 是否出错（is_error 字段）
+	text       string
+	toolUseID  string
+	content    string // tool_result 的实际内容
+	isError    bool   // tool_result 是否出错（is_error 字段）
+	rawContent string // 原始 content block JSON，供前端结构化兜底
 }
 
 // parseContentBlocks 解析 user 消息的 content（可能是字符串或数组）。
@@ -491,7 +624,7 @@ func parseContentBlocks(raw json.RawMessage) []contentBlock {
 	if raw[0] == '"' {
 		var s string
 		if json.Unmarshal(raw, &s) == nil && s != "" {
-			return []contentBlock{{text: s}}
+			return []contentBlock{{text: s, rawContent: rawJSONString(raw)}}
 		}
 		return nil
 	}
@@ -504,23 +637,29 @@ func parseContentBlocks(raw json.RawMessage) []contentBlock {
 		Content   json.RawMessage `json:"content"`
 		IsError   bool            `json:"is_error"`
 	}
-	if json.Unmarshal(raw, &items) != nil {
+	var rawItems []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || json.Unmarshal(raw, &rawItems) != nil {
 		return nil
 	}
 
 	var blocks []contentBlock
-	for _, item := range items {
+	for idx, item := range items {
+		rawBlock := ""
+		if idx < len(rawItems) {
+			rawBlock = rawJSONString(rawItems[idx])
+		}
 		switch item.Type {
 		case "text":
 			if item.Text != "" {
-				blocks = append(blocks, contentBlock{text: item.Text})
+				blocks = append(blocks, contentBlock{text: item.Text, rawContent: rawBlock})
 			}
 		case "tool_result":
 			content := extractToolResultContent(item.Content)
 			blocks = append(blocks, contentBlock{
-				toolUseID: item.ToolUseID,
-				content:   content,
-				isError:   item.IsError,
+				toolUseID:  item.ToolUseID,
+				content:    content,
+				isError:    item.IsError,
+				rawContent: rawBlock,
 			})
 		}
 	}

@@ -64,6 +64,7 @@ var claudeDesktopPathMarkers = []string{
 	`\anthropic\claude`,  // %LOCALAPPDATA%\Anthropic\Claude Desktop\ 等变体
 	`\claude desktop\`,   // Program Files\Claude Desktop\
 	`\programs\claude\`,  // %LOCALAPPDATA%\Programs\Claude\ (Electron)
+	`\windowsapps\claude`, // Microsoft Store / MSIX 安装: %ProgramFiles%\WindowsApps\Claude_<ver>_<arch>__<hash>\app\
 }
 
 // isClaudeDesktopPath 判断 exe 路径是否属于 Claude 桌面应用（非 Claude Code CLI）。

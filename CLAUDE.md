@@ -68,7 +68,9 @@ go run . --list
 
 ## 发布
 
-每次发布前必须先执行 `./build.sh --release`（或 `task release-build`），确认 `cc-console-setup.exe`、`cc-console-setup.exe.minisig`、`latest.json` 都已生成，再上传到 GitHub Release：
+每次发布前必须先执行 `./build.sh --release`（或 `task release-build`），确认 `cc-console-setup.exe`、`cc-console-setup.exe.minisig`、`latest.json` 都已生成，再上传到 GitHub Release。
+
+**GitHub Release 上传必须使用命令行 `gh` CLI**：先 `git push origin <branch>` 推送提交，再用 `gh release create`/`gh release upload` 上传资产。不要为发布上传调用 `web-access`、CDP 或浏览器页面操作；除非用户明确要求网页登录/网页操作，发布链路一律走 `git` + `gh` 命令。
 
 ```bash
 gh release create v<version> ./cc-console-setup.exe ./latest.json ./cc-console-setup.exe.minisig --title "v<version>"

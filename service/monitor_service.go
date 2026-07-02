@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -132,6 +133,14 @@ func (s *MonitorService) ActShowWindow(pid int) error {
 	return monitor.Injector.ShowWindow(pid)
 }
 
+// ActCloseInstance 关闭目标 Claude Code 进程，并尽量关闭其独立终端窗口。
+func (s *MonitorService) ActCloseInstance(pid int) (string, error) {
+	if pid <= 0 {
+		return "", fmt.Errorf("PID 无效")
+	}
+	return monitor.Injector.CloseInstance(pid)
+}
+
 // GetChatHistory 返回指定 PID 实例的完整会话消息历史（含工具调用/结果）。
 func (s *MonitorService) GetChatHistory(pid int) (*monitor.ChatHistoryResult, error) {
 	si, ok := monitor.GetCachedSession(pid)
@@ -155,6 +164,33 @@ func (s *MonitorService) GetCommandSuggestions(pid int) []monitor.CommandSuggest
 		cwd = si.Cwd
 	}
 	return monitor.GetCommandSuggestions(cwd)
+}
+
+// SaveTextFile 弹出系统原生保存框，把前端传入的文本保存为本地文件。
+// 取消保存返回空字符串；成功返回最终路径。
+func (s *MonitorService) SaveTextFile(filename string, content string) (string, error) {
+	if s.app == nil {
+		return "", fmt.Errorf("应用未初始化")
+	}
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		filename = "cc-console-message.md"
+	}
+	path, err := s.app.Dialog.SaveFile().
+		SetMessage("保存 Markdown 文件").
+		SetFilename(filename).
+		CanCreateDirectories(true).
+		PromptForSingleSelection()
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // ---- 实例启动 ----
@@ -269,10 +305,12 @@ type SettingsResult struct {
 	AutoRepairClaudeSettings bool   `json:"autoRepairClaudeSettings"` // settings.json 漂移时自动修复
 	SortField                string `json:"sortField"`                // 实例列表排序字段（updatedAt | startedAt | contextTokens）
 	SortDir                  string `json:"sortDir"`                  // 排序方向（asc | desc）
+	ViewMode                 string `json:"viewMode"`                 // 主区布局（list | chat）
+	ShowSessionSubtitle      bool   `json:"showSessionSubtitle"`      // 会话标签是否显示目录副标题
 }
 
 // Version 应用版本号。
-const Version = "1.4.7"
+const Version = "1.4.8"
 
 // GetSettings 返回当前设置。
 func (s *MonitorService) GetSettings() *SettingsResult {
@@ -290,6 +328,10 @@ func (s *MonitorService) GetSettings() *SettingsResult {
 	if sortDir == "" {
 		sortDir = "desc"
 	}
+	viewMode := cfg.ViewMode
+	if viewMode != "list" && viewMode != "chat" {
+		viewMode = "list" // 默认列表布局；兼容旧配置缺省值
+	}
 	return &SettingsResult{
 		CloseQuits:               cfg.CloseQuits,
 		AutoStart:                auto,
@@ -301,15 +343,19 @@ func (s *MonitorService) GetSettings() *SettingsResult {
 		AutoRepairClaudeSettings: cfg.AutoRepairClaudeSettings,
 		SortField:                sortField,
 		SortDir:                  sortDir,
+		ViewMode:                 viewMode,
+		ShowSessionSubtitle:      cfg.ShowSessionSubtitle,
 	}
 }
 
-// SaveListPrefs 持久化实例列表的排序偏好（字段 + 方向），下次启动沿用。
+// SaveListPrefs 持久化实例列表视图偏好（排序字段 + 方向 + 布局模式），下次启动沿用。
 // 与 SaveSettings 分离：列表视图状态独立保存，避免扰动其它设置项。
-func (s *MonitorService) SaveListPrefs(sortField, sortDir string) error {
+func (s *MonitorService) SaveListPrefs(sortField, sortDir, viewMode string, showSessionSubtitle bool) error {
 	cfg := monitor.GetSettings()
 	cfg.SortField = sortField
 	cfg.SortDir = sortDir
+	cfg.ViewMode = viewMode
+	cfg.ShowSessionSubtitle = showSessionSubtitle
 	return monitor.SaveSettings(cfg)
 }
 

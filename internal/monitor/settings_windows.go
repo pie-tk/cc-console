@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	runKeyPath   = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runValueName = `CCConsole`
+	runKeyPath         = `Software\Microsoft\Windows\CurrentVersion\Run`
+	runValueName       = `CCConsole`
+	legacyRunValueName = `ClaudeCodeMonitor` // 改名前（v1.3.9 之前）的旧值名；旧 exe 名已不存在，残留项开机必失败，启动时清理
 )
 
 // SetAutoStart 设置/取消开机自启动。
@@ -58,4 +59,17 @@ func IsAutoStartEnabled() (bool, error) {
 		return false, nil // 值不存在 = 未启用
 	}
 	return true, nil
+}
+
+// cleanupLegacyAutoStart 清理改名前残留的旧注册表自启项。
+// v1.3.9 改名时值名从 ClaudeCodeMonitor 改为 CCConsole、exe 名从 claude-monitor.exe 改为
+// cc-console.exe，旧值名指向的旧 exe 已不存在，老用户升级后开机启动会静默失败。
+// 启动时幂等删除；值不存在不算错误。
+func cleanupLegacyAutoStart() {
+	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer key.Close()
+	_ = key.DeleteValue(legacyRunValueName)
 }

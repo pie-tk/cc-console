@@ -25,18 +25,35 @@
           </svg>
           <span class="update-badge-dot"></span>
         </button>
+        <span class="flex-spacer"></span>
+        <button id="new-instance-btn" class="new-instance-btn" title="新建 Claude Code 会话" onclick="openNewInstancePanel()">＋ 新建会话</button>
+        <button id="settings-btn" class="settings-btn" title="设置" aria-label="设置" onclick="showSettings()">
+          <svg class="settings-btn-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
       </div>
       <div class="spacer-8"></div>
       <div class="stats-row">
         <span id="stats" class="stats-text">正在检测...</span>
         <span id="usage-badge" class="usage-badge hidden"></span>
         <span class="flex-spacer"></span>
-        <button id="new-instance-btn" class="new-instance-btn" title="新建 Claude Code 实例" onclick="openNewInstancePanel()">＋ 新建实例</button>
-        <button id="settings-btn" class="settings-btn" title="设置" aria-label="设置" onclick="showSettings()">
-          <svg class="settings-btn-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
+        <button id="layout-toggle-btn" class="layout-toggle-btn" title="切换到对话布局" aria-label="切换布局" onclick="switchLayout()">
+          <span class="layout-toggle-icon layout-icon-list" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="5" width="16" height="4" rx="2"/>
+              <rect x="4" y="15" width="16" height="4" rx="2"/>
+              <path d="M8 7h8M8 17h8" opacity="0.65"/>
+            </svg>
+          </span>
+          <span class="layout-toggle-icon layout-icon-chat" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3.5" y="4" width="5" height="16" rx="2"/>
+              <rect x="11" y="4" width="9.5" height="16" rx="2.4"/>
+              <path d="M14 9h3.5M14 13h2.5" opacity="0.65"/>
+            </svg>
+          </span>
         </button>
       </div>
     </header>
@@ -61,8 +78,20 @@
         <div class="empty-icon">🌙</div>
         <div class="empty-title">当前没有运行中的 Claude Code 实例</div>
         <div class="empty-hint">启动一个 Claude Code 会话后，它会自动出现在这里</div>
-        <button class="new-instance-btn empty-new-btn" onclick="openNewInstancePanel()">＋ 新建实例</button>
+        <button class="new-instance-btn empty-new-btn" onclick="openNewInstancePanel()">＋ 新建会话</button>
       </div>
+    </div>
+
+    <!-- chat 双栏视图（左会话标签 + 右对话） -->
+    <div id="split-view" class="hidden">
+      <aside id="session-tabs">
+        <div class="session-tabs-header">活跃会话</div>
+        <div id="session-tabs-list"></div>
+        <div id="session-tabs-empty" class="hidden">暂无活跃会话</div>
+      </aside>
+      <main id="chat-pane">
+        <div id="chat-pane-empty">选择左侧实例开始对话</div>
+      </main>
     </div>
 
     <!-- 分割线 -->
@@ -111,7 +140,7 @@
 
   <!-- 会话聊天面板 -->
   <div id="chat-overlay" class="modal-overlay hidden" onclick="if(event.target===this) closeChatPanel()">
-    <div class="chat-dialog">
+    <div class="chat-dialog" id="chat-dialog">
       <div class="chat-header">
         <span class="chat-emoji">💬</span>
         <span class="chat-title" id="chat-title">会话</span>
@@ -119,21 +148,28 @@
         <span class="chat-branch" id="chat-branch"></span>
         <span class="chat-model" id="chat-model"></span>
         <span class="flex-spacer"></span>
+        <button id="chat-change-toggle-btn" class="chat-change-toggle hidden" onclick="toggleChatChangePanel()" title="显示/隐藏文件修改面板">修改</button>
         <button class="chat-close-btn" onclick="closeChatPanel()" title="关闭">✕</button>
       </div>
       <div class="chat-scroll-wrap">
-        <div class="chat-body">
-          <div class="chat-messages" id="chat-messages">
-            <div class="chat-empty">加载中...</div>
+        <div class="chat-main-col">
+          <div class="chat-body">
+            <div class="chat-messages" id="chat-messages">
+              <div class="chat-empty">加载中...</div>
+            </div>
           </div>
+          <button id="chat-scroll-btn" class="chat-scroll-btn" title="回到底部" aria-label="回到底部">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 4v10" />
+              <path d="M7.5 9.5 12 14 16.5 9.5" />
+              <path d="M5 19h14" />
+            </svg>
+          </button>
         </div>
-        <button id="chat-scroll-btn" class="chat-scroll-btn" title="回到底部" aria-label="回到底部">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 4v10" />
-            <path d="M7.5 9.5 12 14 16.5 9.5" />
-            <path d="M5 19h14" />
-          </svg>
-        </button>
+        <div id="chat-change-resizer" class="chat-change-resizer hidden" title="拖动调整修改面板宽度"></div>
+        <aside id="chat-change-panel" class="chat-change-panel hidden">
+          <div class="chat-change-empty">暂无文件修改</div>
+        </aside>
       </div>
       <div id="chat-processing" class="chat-processing hidden">
         <span class="chat-processing-spin">✻</span>
@@ -246,6 +282,33 @@
             </div>
             <div class="settings-item">
               <div class="settings-item-text">
+                <span class="settings-label">显示会话目录副标题</span>
+                <span class="settings-desc">对话布局左侧会话标签下方显示工作目录；关闭后只显示会话主题</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-show-session-subtitle" onchange="toggleSessionSubtitle(this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div id="settings-system" class="settings-section hidden">
+            <div class="settings-title">系统设置</div>
+            <div class="settings-item">
+              <div class="settings-item-text">
+                <span class="settings-label">开机启动</span>
+                <span class="settings-desc">开启后，系统启动时自动运行此程序</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-auto-start" onchange="saveSetting('autoStart', this.checked)">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+              </label>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-text">
                 <span class="settings-label">自动检查 Claude settings.json</span>
                 <span class="settings-desc">每 10 秒检查 ~/.claude/settings.json 是否仍保留监控器所需的 statusLine 与 lifecycle hooks 配置</span>
               </div>
@@ -270,21 +333,6 @@
             </div>
             <div class="settings-inline-help">
               <button class="settings-text-btn" onclick="showClaudeSettingsRules()">查看 settings.json 修改规则与手动配置</button>
-            </div>
-          </div>
-          <div id="settings-system" class="settings-section hidden">
-            <div class="settings-title">系统设置</div>
-            <div class="settings-item">
-              <div class="settings-item-text">
-                <span class="settings-label">开机启动</span>
-                <span class="settings-desc">开启后，系统启动时自动运行此程序</span>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="toggle-auto-start" onchange="saveSetting('autoStart', this.checked)">
-                <span class="toggle-track">
-                  <span class="toggle-thumb"></span>
-                </span>
-              </label>
             </div>
           </div>
           <div id="settings-about" class="settings-section hidden">
