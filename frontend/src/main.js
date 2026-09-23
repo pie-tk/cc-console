@@ -20,6 +20,7 @@ const ID_GET_BRIDGE_STATUS = 1164906267;
 const ID_ENABLE_BRIDGE = 1918911982;
 const ID_GET_BRIDGE_RULES = 4094932612;
 const ID_OPEN_URL = 3952279129;
+const ID_OPEN_FOLDER = 3284756652; // OpenFolder(path) — 在资源管理器/Finder 中打开目录
 const ID_CHECK_UPDATE = 1254307161;
 const ID_DOWNLOAD_UPDATE = 271309265;
 const ID_GET_CHAT_HISTORY = 1507566330;
@@ -36,6 +37,8 @@ const ID_WRITE_TERMINAL = 484789539; // WriteTerminal(id, data) — 写入键盘
 const ID_RESIZE_TERMINAL = 4194224864; // ResizeTerminal(id, cols, rows) — 调整终端尺寸
 const ID_KILL_TERMINAL = 2250045032; // KillTerminal(id) — 终止内置终端
 const ID_LIST_TERMINALS = 2548176281; // ListTerminals() — 列出活跃内置终端
+const ID_GET_CLIPBOARD_FILES = 1601469880; // GetClipboardFilePaths() — 剪贴板中的文件路径（粘贴附件）
+const ID_DESCRIBE_FILES = 1086435764; // DescribeFiles(paths) — 附件文件名/大小/是否目录
 
 // ---- State ----
 let currentPids = [];
@@ -135,7 +138,8 @@ let sendOnEnter = true;       // 消息框发送键：true=回车发送(Shift+�
 let autoCheckClaudeSettings = true;
 let autoRepairClaudeSettings = true;
 let launchYoloSetting = true;     // 设置面板里可能没有对应 DOM，保存其它设置时仍需保留后端当前值
-let chatDrafts = {};           // 消息框草稿：key = pid|cwd，关闭面板后保留，重新打开时恢复
+let chatDrafts = {};           // 消息框草稿：key = pid|cwd，value = {text, files}，关闭面板后保留，重新打开时恢复
+let chatAttachments = [];      // 消息框文件附件 chips：[{path,name,size,isDir}]，发送时拼为路径文本（最终注入的仍是纯文本）
 let chatScrollPositions = {};   // 对话滚动位置：key = pid|cwd，切换会话后恢复阅读位置
 let pendingChatScrollRestore = null; // 下一次 renderChatMessages 后应用的一次性滚动恢复
 let bridgeStatusWarnKey = '';   // 避免 settings.json 漂移告警每 10s 重复弹
@@ -204,6 +208,7 @@ async function boot() {
   await loadListPrefs(); // 加载持久化的列表偏好（排序 + 布局），需在首次 refresh 前应用布局
   initSlashAutocomplete(); // 绑定消息框斜杠命令自动补全
   initDirFilter(); // 绑定目录筛选下拉的外部点击关闭
+  initFileAttachments(); // 绑定消息框文件拖放/粘贴附件
   window.addEventListener('resize', applyChatChangePanelWidth);
   refresh();
   pollBridgeStatus();
@@ -1532,11 +1537,19 @@ function renderToolCard(toolUse, result) {
 
   var html = '<div class="chat-msg chat-tool-card">';
   // 头部：⏺ 工具名(主参数) + 完整路径（路径类工具独占一行）
+  // 路径类参数（Read/Write/Edit/NotebookEdit 的 file_path）走中段省略 + 复制按钮；
+  // Grep/Glob 的第二行完整路径同样处理，其余文本保持原样。
+  var isPathParam = (tool === 'Read' || tool === 'Write' || tool === 'Edit' || tool === 'NotebookEdit');
+  var isPathLine = (tool === 'Grep' || tool === 'Glob');
   html += '<div class="chat-tool-head">'
     + '<span class="chat-tool-dot">⏺</span>'
     + '<span class="chat-tool-name">' + escHtml(tool) + '</span>'
-    + (info.param ? '<span class="chat-tool-param">(' + escHtml(info.param) + ')</span>' : '')
-    + (info.path ? '<span class="chat-tool-path">' + escHtml(info.path) + '</span>' : '')
+    + (info.param ? '<span class="chat-tool-param' + (isPathParam ? ' path-param' : '') + '">('
+      + (isPathParam ? filePathHTML(info.param) : escHtml(info.param))
+      + ')</span>' : '')
+    + (info.path ? '<span class="chat-tool-path' + (isPathLine ? ' is-path' : '') + '">'
+      + (isPathLine ? filePathHTML(info.path) : escHtml(info.path))
+      + '</span>' : '')
     + '</div>';
 
   // 主体：Edit/Write 走 diff；Skill args 默认折叠；其他折叠 input 全文
@@ -1730,11 +1743,17 @@ function renderToolGroupCard(group) {
     var s = it.summary || summarizeToolCall(it.toolUse, it.result);
     var changeAttr = it.changeId ? (' data-change-id="' + escAttr(it.changeId) + '" onclick="focusChange(\'' + escAttr(it.changeId) + '\')"') : '';
     var cls = 'chat-tool-row' + (it.changeId ? ' chat-change-link' : '');
+    var isPathParam = (s.tool === 'Read' || s.tool === 'Write' || s.tool === 'Edit' || s.tool === 'NotebookEdit');
+    var isPathLine = (s.tool === 'Grep' || s.tool === 'Glob');
     rows += '<div class="' + cls + '"' + changeAttr + '>'
       + '<span class="chat-tool-row-dot">⏺</span>'
       + '<span class="chat-tool-row-name">' + escHtml(s.tool) + '</span>'
-      + '<span class="chat-tool-row-main">' + escHtml(s.param || '') + '</span>'
-      + (s.path ? '<span class="chat-tool-row-path">' + escHtml(s.path) + '</span>' : '')
+      + '<span class="chat-tool-row-main' + (isPathParam ? ' path-param' : '') + '">'
+      + (isPathParam ? filePathHTML(s.param || '') : escHtml(s.param || ''))
+      + '</span>'
+      + (s.path ? '<span class="chat-tool-row-path' + (isPathLine ? ' is-path' : '') + '">'
+        + (isPathLine ? filePathHTML(s.path) : escHtml(s.path))
+        + '</span>' : '')
       + '<span class="chat-tool-row-result ' + (s.ok ? 'ok' : 'err') + '">⎿ ' + escHtml(s.resultText || '') + '</span>'
       + '</div>';
     if (s.tool === 'Skill' && s.input && s.input.args) {
@@ -2268,6 +2287,17 @@ function chatTokensDisplay(inst) {
   return "—";
 }
 
+// chatCacheRateTitle 缓存命中率提示文案：cache 占累计总 tokens 的百分比（两位小数）；
+// 无 token 数据时返回空串，清除旧提示。
+function chatCacheRateTitle(inst) {
+  var tin = inst.totalInputTokens || 0;
+  var tout = inst.totalOutputTokens || 0;
+  var tcache = inst.totalCacheTokens || 0;
+  var total = tin + tout + tcache;
+  if (total <= 0) return '';
+  return '缓存命中率：' + (tcache * 100 / total).toFixed(2) + '%';
+}
+
 // ---- 主题行右侧：会话动态信息 ----
 function lastQueryDisplay(inst) {
   if (!inst.hasConversation || !inst.lastUserQuery) return "";
@@ -2640,8 +2670,17 @@ window.openChatPanel = async function(pid) {
   }
 
   document.getElementById("chat-messages").innerHTML = '<div class="chat-empty">加载中...</div>';
+  // 恢复草稿：value 为 {text, files} 对象；容错读取旧版纯字符串草稿
   var draftKey = chatSessionKey(pid);
-  document.getElementById("chat-input").value = chatDrafts[draftKey] || "";
+  var draft = chatDrafts[draftKey];
+  if (draft && typeof draft === "object") {
+    document.getElementById("chat-input").value = draft.text || "";
+    chatAttachments = (draft.files || []).slice();
+  } else {
+    document.getElementById("chat-input").value = (typeof draft === "string" && draft) || "";
+    chatAttachments = [];
+  }
+  renderChatAttachments();
   if (viewMode === 'chat') {
     // 内联模式：dialog 已在 #chat-pane（永不单独 hidden），隐藏空态覆盖层即可露出 dialog
     document.getElementById("chat-pane-empty").classList.add("hidden");
@@ -2662,6 +2701,18 @@ window.openChatPanel = async function(pid) {
   chatRefreshTimer = setInterval(function() {
     if (chatPanelPid !== null) refreshChatMessages(chatPanelPid);
   }, 2000);
+};
+
+// 打开会话目录：点击标题右侧目录标签，在资源管理器/Finder 中打开对应文件夹。
+window.openChatCwdFolder = async function() {
+  var meta = instanceMeta[chatPanelPid];
+  var cwd = (meta && meta.cwd) ? meta.cwd : "";
+  if (!cwd) return;
+  try {
+    await Call.ByID(ID_OPEN_FOLDER, cwd);
+  } catch (e) {
+    flashFoot("⚠️ 打开文件夹失败: " + (e && e.message ? e.message : e));
+  }
 };
 
 // ---- 处理中/完成指示器状态机（Claude Code 风格 spinner） ----
@@ -2926,6 +2977,8 @@ function renderChatStats(pid) {
   var tokensEl = document.getElementById("chat-tokens");
   if (tokensEl) {
     tokensEl.textContent = chatTokensDisplay(inst);
+    // hover 提示缓存命中率（cache 占总量百分比，两位小数）
+    tokensEl.title = chatCacheRateTitle(inst);
   }
 
   // 分支：每秒刷新，跟随用户在其他终端的分支切换
@@ -3089,20 +3142,43 @@ window.handleChatRewind = async function() {
   }
 };
 
+// findTerminalInfoByPid 按 Claude 实例 PID 精确查找内置终端，禁止用 cwd 猜测归属。
+function findTerminalInfoByPid(list, pid) {
+  var target = Number(pid);
+  if (!Number.isFinite(target)) return null;
+  for (var i = 0; i < (list || []).length; i++) {
+    var info = list[i];
+    if (info && Number(info.pid) === target) return info;
+  }
+  return null;
+}
+
 // handleChatShowWin：内置终端实例 → 打开内置终端面板并切到对应 tab；外部实例 → 置前外部窗口。
 window.handleChatShowWin = async function() {
   if (!chatPanelPid) return;
-  // 按工作目录匹配内置终端 tab（内置实例无外部窗口，需打开内置面板）
-  var cwd = '';
-  var meta = instanceMeta[chatPanelPid];
-  if (meta && meta.cwd) cwd = meta.cwd;
-  var sid = cwd ? findTerminalTabByWorkdir(cwd) : null;
-  if (sid) {
-    openTerminalPanel();
-    switchTerminalTab(sid);
-    showChatHint('🪟 已打开内置终端');
-    return;
+
+  // 每次点击都读取最新终端列表，按 PID→session ID 精确关联；同 cwd 不能代表同一个实例。
+  var info = null;
+  try {
+    var list = await Call.ByID(ID_LIST_TERMINALS);
+    info = findTerminalInfoByPid(list, chatPanelPid);
+  } catch (_) {
+    // 列表不可用时保守按外部窗口处理，绝不误打开同目录的内置 tab。
   }
+  if (info && info.id) {
+    var sid = String(info.id);
+    // 刷新期间前端 tab 可能尚未登记（例如刚启动或通过目录选择器启动），复用后端会话。
+    if (!terms[sid]) {
+      await openTerminalTab(info.kind || 'claude', info.workdir || '', sid);
+    }
+    if (terms[sid]) {
+      openTerminalPanel();
+      switchTerminalTab(sid);
+      showChatHint('🪟 已打开内置终端');
+      return;
+    }
+  }
+
   try {
     await Call.ByID(ID_ACT_SHOW, chatPanelPid);
     showChatHint('🪟 已将该实例窗口置前');
@@ -3165,6 +3241,71 @@ function isChatNearBottom() {
   return body.scrollHeight - body.scrollTop - body.clientHeight < 80;
 }
 
+// fileTitleParts 把文件路径拆为 头/中/尾 三段，供修改面板做中间省略展示：
+// 头=第一个目录(完整)、尾=文件名(完整)、中=其余目录(含前导分隔符)。
+// 中部在 CSS 宽度不足时尾部省略（…），保证首目录与文件名始终完整；路径够短时三段拼回即原路径。
+function fileTitleParts(path) {
+  path = String(path == null ? '' : path);
+  if (!path) return { head: '', mid: '', tail: '' };
+  var sep = path.indexOf('\\') >= 0 ? '\\' : '/';
+  var parts = path.split(/[\\/]+/);
+  // Unix 绝对路径首段为空：把 / 并入首个目录（如 /Users）
+  if (parts.length > 1 && parts[0] === '') {
+    parts[1] = '/' + parts[1];
+    parts.shift();
+  }
+  if (parts.length === 1) return { head: parts[0], mid: '', tail: '' };
+  return {
+    head: parts[0],
+    mid: parts.length > 2 ? sep + parts.slice(1, -1).join(sep) : '',
+    tail: sep + parts[parts.length - 1]
+  };
+}
+
+// filePathSpans 返回路径三段（头/中/尾）的省略结构 span，供修改面板与消息气泡复用。
+function filePathSpans(path) {
+  var parts = fileTitleParts(path);
+  return '<span class="pe-head">' + escHtml(parts.head) + '</span>'
+    + '<span class="pe-mid">' + escHtml(parts.mid) + '</span>'
+    + '<span class="pe-tail">' + escHtml(parts.tail) + '</span>';
+}
+
+// filePathHTML 渲染可省略的路径：中段省略（hover 显示完整路径）+ 复制按钮。
+// 非路径文本（不含 / 或 \ 分隔符）原样转义返回，不套省略逻辑。
+function filePathHTML(path) {
+  path = String(path == null ? '' : path);
+  if (!path || (path.indexOf('/') < 0 && path.indexOf('\\') < 0)) return escHtml(path);
+  return '<span class="path-ellipsis" title="' + escAttr(path) + '">' + filePathSpans(path) + '</span>'
+    + '<button class="path-copy" data-path="' + escAttr(path) + '" onclick="copyChangeFile(this)" title="复制完整路径">📋</button>';
+}
+
+// copyChangeFile 复制文件路径到剪贴板（优先 Async Clipboard API，失败回退 execCommand）。
+window.copyChangeFile = function(btn) {
+  var path = (btn && btn.getAttribute('data-path')) || '';
+  if (!path) return;
+  function copyViaExec() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = path;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  }
+  function done(ok) {
+    flashFoot(ok ? '✓ 已复制: ' + path : '✗ 复制失败: ' + path);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(path).then(function() { done(true); }).catch(function() { done(copyViaExec()); });
+  } else {
+    done(copyViaExec());
+  }
+};
+
 function renderChangePanel(changes) {
   changes = changes || [];
   var panel = document.getElementById('chat-change-panel');
@@ -3192,7 +3333,11 @@ function renderChangePanel(changes) {
     + '<div class="chat-change-list">';
   for (var f = 0; f < order.length; f++) {
     var file = order[f];
-    html += '<section class="chat-change-file"><div class="chat-change-file-title" title="' + escAttr(file) + '">📄 ' + escHtml(file) + '</div>';
+    html += '<section class="chat-change-file"><div class="chat-change-file-title" title="' + escAttr(file) + '">'
+      + '<span class="chat-file-ico">📄</span>'
+      + filePathSpans(file)
+      + '<button class="path-copy" data-path="' + escAttr(file) + '" onclick="copyChangeFile(this)" title="复制完整路径">📋</button>'
+      + '</div>';
     var list = byFile[file];
     for (var j = 0; j < list.length; j++) {
       var ch = list[j];
@@ -3302,7 +3447,15 @@ window.sendChatMessage = async function() {
   if (guardExternalSend()) return;
   var input = document.getElementById("chat-input");
   var text = input.value.trim();
-  if (!text) return;
+  var files = chatAttachments.slice(); // 附件快照：发送后即清空 UI
+  if (!text && !files.length) return;
+  // 拼装附件：每行一个路径（后端拍平换行为空格）；含空白的路径加双引号防歧义
+  var composed = text;
+  for (var fi = 0; fi < files.length; fi++) {
+    var fp = files[fi].path;
+    if (/\s/.test(fp)) fp = '"' + fp + '"';
+    composed += (composed ? "\n" : "") + fp;
+  }
 
   var btn = document.getElementById("chat-send-btn");
   btn.disabled = true;
@@ -3310,21 +3463,24 @@ window.sendChatMessage = async function() {
 
   try {
     flashFoot("发送中… PID " + chatPanelPid);
-    await Call.ByID(ID_ACT_PROMPT, chatPanelPid, text);
+    await Call.ByID(ID_ACT_PROMPT, chatPanelPid, composed);
     input.value = "";
     input.style.height = ""; // 重置 textarea 高度
+    chatAttachments = []; // 发送成功，清空附件
+    renderChatAttachments();
     delete chatDrafts[chatDraftKey()]; // 发送成功，清除草稿
     // 记入发送历史栈（去重后移到末尾），补上 JSONL 未落盘的最新发送
-    var hi = chatSendHistory.indexOf(text);
+    var hi = chatSendHistory.indexOf(composed);
     if (hi !== -1) chatSendHistory.splice(hi, 1);
-    chatSendHistory.push(text);
+    chatSendHistory.push(composed);
     if (chatSendHistory.length > 200) chatSendHistory.shift();
     chatHistoryIdx = -1; // 发送后退出历史导航态
-    // 乐观显示已发送的消息
+    // 乐观显示已发送的消息（附件渲染为只读 chips，而非裸路径文本）
     var container = document.getElementById("chat-messages");
     var optHTML = '<div class="chat-msg chat-msg-user">'
       + '<span class="chat-msg-label">📝 用户（已发送）</span>'
       + escHtml(text)
+      + (files.length ? attachmentsBubbleHTML(files) : '')
       + '</div>';
     container.insertAdjacentHTML("beforeend", optHTML);
     var body = container.parentNode;
@@ -4189,8 +4345,170 @@ function saveChatDraft() {
   var key = chatDraftKey();
   if (!key) return;
   var val = document.getElementById("chat-input").value;
-  if (val) { chatDrafts[key] = val; }
+  if (val || chatAttachments.length) { chatDrafts[key] = { text: val, files: chatAttachments.slice() }; }
   else { delete chatDrafts[key]; }
+}
+
+// ---- 文件附件 chips（拖放 / 粘贴文件 → 输入框上方胶囊条） ----
+// 输入通道最终只发纯文本：附件仅是 UI 态，发送时把各路径按行拼进文本
+// （后端 ActPrompt 会把换行拍平为空格，含空白的路径加双引号防歧义）。
+
+const MAX_ATTACHMENTS = 10; // 附件上限，防止 chips 行无限膨胀
+
+// initFileAttachments 绑定：Go 转发的拖放事件 + 消息框粘贴事件。
+// 拖放链路：Wails runtime 解析落点（data-file-drop-target）与绝对路径 →
+// app.go WindowFilesDropped hook → Events.Emit("chat:files-dropped")。
+function initFileAttachments() {
+  Events.On("chat:files-dropped", function(ev) {
+    var data = (ev && ev.data) || {};
+    var paths = data.paths || [];
+    if (!paths.length) return;
+    if (data.targetId !== "chat-input-area") return; // 未落在消息输入区，忽略
+    if (chatPanelPid === null) return;
+    if (guardExternalSend()) return;
+    addChatAttachmentPaths(paths).then(function(n) {
+      if (n > 0) flashFoot("📎 已附加 " + n + " 个文件，发送时将以路径随消息发出");
+    });
+  });
+  var chatInput = document.getElementById("chat-input");
+  if (chatInput) chatInput.addEventListener("paste", onChatInputPaste);
+}
+
+// onChatInputPaste：粘贴内容为文件（资源管理器 Ctrl+C）时转为附件 chips。
+// WebView2 的 clipboardData 只给 File 对象不给绝对路径，转由 Go 读 CF_HDROP；
+// 不 preventDefault——文件对象本就无法粘进 textarea，文本粘贴不受影响。
+function onChatInputPaste(e) {
+  var files = (e.clipboardData && e.clipboardData.files) || [];
+  if (!files.length) return; // 普通文本/图片粘贴，走默认行为
+  if (chatPanelPid === null) return;
+  if (guardExternalSend()) return;
+  Call.ByID(ID_GET_CLIPBOARD_FILES).then(function(paths) {
+    if (paths && paths.length) {
+      return addChatAttachmentPaths(paths).then(function(n) {
+        if (n > 0) flashFoot("📎 已附加 " + n + " 个文件，发送时将以路径随消息发出");
+        else flashFoot("📎 这些文件已在附件列表中");
+      });
+    }
+    // 空列表：剪贴板并非文件列表（如截图位图），暂不支持，静默放行
+  }).catch(function(err) {
+    flashFoot("⚠️ 读取剪贴板文件失败: " + (err && err.message ? err.message : err));
+  });
+}
+
+// addChatAttachmentPaths 去重后追加附件（异步补齐大小/目录信息），返回实际新增数。
+async function addChatAttachmentPaths(paths) {
+  var fresh = [];
+  var seen = {};
+  for (var i = 0; i < paths.length; i++) {
+    var p = String(paths[i] || "").trim();
+    if (!p) continue;
+    var key = p.toLowerCase(); // Windows 路径大小写不敏感
+    if (seen[key]) continue;
+    seen[key] = true;
+    var dup = false;
+    for (var j = 0; j < chatAttachments.length; j++) {
+      if (chatAttachments[j].path.toLowerCase() === key) { dup = true; break; }
+    }
+    if (!dup) fresh.push(p);
+  }
+  if (fresh.length && chatAttachments.length + fresh.length > MAX_ATTACHMENTS) {
+    fresh = fresh.slice(0, Math.max(0, MAX_ATTACHMENTS - chatAttachments.length));
+    flashFoot("📎 附件最多 " + MAX_ATTACHMENTS + " 个，已忽略多余文件");
+  }
+  if (!fresh.length) return 0;
+  var descs = [];
+  try {
+    descs = (await Call.ByID(ID_DESCRIBE_FILES, fresh)) || [];
+  } catch (e) { /* DescribeFiles 失败不阻断：按文件名兜底渲染 */ }
+  var added = 0;
+  for (var k = 0; k < fresh.length; k++) {
+    var d = descs[k] || {};
+    chatAttachments.push({
+      path: fresh[k],
+      name: d.name || basenameOf(fresh[k]),
+      size: d.size || 0,
+      isDir: !!d.isDir,
+    });
+    added++;
+  }
+  renderChatAttachments();
+  saveChatDraft();
+  return added;
+}
+
+// basenameOf 取路径最后一段（容忍 / 与 \ 两种分隔符），失败回退原路径。
+function basenameOf(p) {
+  var s = String(p || "").replace(/\\/g, "/");
+  var idx = s.lastIndexOf("/");
+  return idx >= 0 ? s.slice(idx + 1) : s;
+}
+
+// removeChatAttachment 移除第 idx 个附件。
+window.removeChatAttachment = function(idx) {
+  chatAttachments.splice(idx, 1);
+  renderChatAttachments();
+  saveChatDraft();
+};
+
+// renderChatAttachments 重绘附件 chips 行（有附件才显示）。
+function renderChatAttachments() {
+  var el = document.getElementById("chat-attachments");
+  if (!el) return;
+  if (!chatAttachments.length) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  var html = "";
+  for (var i = 0; i < chatAttachments.length; i++) {
+    var a = chatAttachments[i];
+    var size = a.isDir ? "" : formatAttachmentSize(a.size);
+    html += '<div class="chat-attach-chip" title="' + escAttr(a.path) + '">'
+      + '<span class="chat-attach-icon">' + attachmentIcon(a) + '</span>'
+      + '<span class="chat-attach-name">' + escHtml(a.name) + '</span>'
+      + (size ? '<span class="chat-attach-size">' + escHtml(size) + '</span>' : '')
+      + '<button class="chat-attach-x" onclick="removeChatAttachment(' + i + ')" title="移除附件">×</button>'
+      + '</div>';
+  }
+  el.innerHTML = html;
+}
+
+// attachmentsBubbleHTML 生成已发送气泡里的只读 chips（无移除按钮）。
+function attachmentsBubbleHTML(files) {
+  var html = '<div class="chat-attach-bubble">';
+  for (var i = 0; i < files.length; i++) {
+    html += '<span class="chat-attach-chip static" title="' + escAttr(files[i].path) + '">'
+      + attachmentIcon(files[i]) + ' <span class="chat-attach-name">' + escHtml(files[i].name) + '</span>'
+      + '</span>';
+  }
+  return html + '</div>';
+}
+
+// attachmentIcon 按扩展名挑 chip 图标（目录固定 📁，未知类型 📄）。
+function attachmentIcon(att) {
+  if (att.isDir) return "📁";
+  var m = /\.([a-z0-9]+)$/i.exec(att.name || "");
+  var ext = m ? m[1].toLowerCase() : "";
+  if (["png","jpg","jpeg","gif","bmp","webp","svg","ico"].indexOf(ext) >= 0) return "🖼";
+  if (["zip","rar","7z","tar","gz","bz2","xz"].indexOf(ext) >= 0) return "🗜";
+  if (ext === "pdf") return "📕";
+  if (["doc","docx"].indexOf(ext) >= 0) return "📘";
+  if (["xls","xlsx","csv"].indexOf(ext) >= 0) return "📗";
+  if (["ppt","pptx"].indexOf(ext) >= 0) return "📙";
+  if (["md","txt","log","json","yaml","yml","toml","ini","env"].indexOf(ext) >= 0) return "📝";
+  if (["js","mjs","ts","tsx","jsx","py","go","rs","java","c","cpp","h","hpp","cs","rb","php","sh","bat","ps1","css","html","sql","vue"].indexOf(ext) >= 0) return "🧩";
+  return "📄";
+}
+
+// formatAttachmentSize 简短体积文案（目录/未知大小返回空串）。
+function formatAttachmentSize(n) {
+  n = Number(n) || 0;
+  if (n <= 0) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
 }
 
 // ---- 斜杠命令/技能自动补全 ----
@@ -4770,18 +5088,7 @@ function terminalKeyHandler(e) {
   return true; // 面板内按键一律不触发其它全局逻辑，xterm textarea 已先行处理
 }
 
-// 按工作目录匹配内置终端 tab（用于「窗口」按钮定位内置实例）。
-// 归一化比较（斜杠统一、去末尾分隔符、小写）；多个匹配取最近创建的。
-function findTerminalTabByWorkdir(cwd) {
-  if (!cwd) return null;
-  var norm = function(p) { return ('' + p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); };
-  var target = norm(cwd);
-  for (var i = termOrder.length - 1; i >= 0; i--) {
-    var tid = termOrder[i];
-    if (terms[tid] && norm(terms[tid].workdir) === target) return tid;
-  }
-  return null;
-}
+// 按工作目录匹配内置终端 tab 的逻辑已移除：窗口路由必须使用终端 PID，避免同目录实例互相误切换。
 
 // 跟随系统主题刷新所有终端配色
 function applyTerminalTheme(isDark) {

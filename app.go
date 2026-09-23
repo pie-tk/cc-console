@@ -65,6 +65,7 @@ func runWailsApp() {
 		MinHeight:                  420,
 		BackgroundColour:           application.NewRGB(255, 255, 255),
 		DefaultContextMenuDisabled: true,
+		EnableFileDrop:             true, // 允许文件拖入窗口（落点元素需 data-file-drop-target 属性）
 		URL:                        "/",
 	}
 	if geo.Ok && !geo.Maximised {
@@ -124,6 +125,26 @@ func runWailsApp() {
 				return // 窗口已销毁（退出流程中），丢弃脏值避免覆盖上次尺寸
 			}
 			monitor.UpdateWindowGeometry(w, h, win.IsMaximised())
+		})
+	})
+
+	// ---- 文件拖放：文件拖到带 data-file-drop-target 的元素上时，把绝对路径转发给前端 ----
+	// Windows 由 WebView2 postMessageWithAdditionalObjects 解析真实路径（JS 层拿不到），
+	// macOS/Linux 走原生 drag 回调；落点元素 ID 供前端判定附件归属哪个输入框。
+	// 注意必须用 OnWindowEvent：alpha.98 的拖放派发只查 eventListeners（OnWindowEvent 写入），
+	// RegisterHook 写入的 eventHooks 在这条路径上不会被调用。
+	win.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
+		files := event.Context().DroppedFiles()
+		if len(files) == 0 {
+			return
+		}
+		targetID := ""
+		if dt := event.Context().DropTargetDetails(); dt != nil {
+			targetID = dt.ElementID
+		}
+		app.Event.Emit("chat:files-dropped", map[string]any{
+			"paths":    files,
+			"targetId": targetID,
 		})
 	})
 

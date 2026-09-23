@@ -160,7 +160,7 @@
       <div class="chat-header">
         <span class="chat-emoji">💬</span>
         <span class="chat-title" id="chat-title">会话</span>
-        <span class="chat-cwd" id="chat-cwd" title=""></span>
+        <span class="chat-cwd" id="chat-cwd" title="" onclick="openChatCwdFolder()"></span>
         <span class="chat-branch" id="chat-branch"></span>
         <span class="chat-model" id="chat-model"></span>
         <span class="flex-spacer"></span>
@@ -200,8 +200,9 @@
         <span class="chat-external-notice-icon">🔒</span>
         <span class="chat-external-notice-body">这是<b>外部终端</b>启动的实例，macOS 不允许向其注入输入，无法在此直接发送。<button class="chat-external-notice-btn" onclick="handleChatShowWin()">显示终端窗口 ↗</button>切到终端直接交互，或用「新建」开一个可交互的内置终端实例。</span>
       </div>
-      <div class="chat-input-area">
+      <div class="chat-input-area" id="chat-input-area" data-file-drop-target>
         <div class="chat-input-main">
+          <div id="chat-attachments" class="chat-attachments hidden"></div>
           <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="4"></textarea>
           <span id="chat-hint" class="chat-hint hidden"></span>
         </div>

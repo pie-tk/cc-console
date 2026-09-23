@@ -1434,7 +1434,10 @@ body.dark .card-bridge-tag { color: #f59e0b; background: rgba(245,158,11,0.15); 
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s, color .15s;
 }
+.chat-cwd:hover { background: var(--accent-soft); color: var(--accent); }
 .chat-cwd:empty { display: none; }
 .flex-spacer { flex: 1; }
 .chat-change-toggle {
@@ -1946,13 +1949,77 @@ body.dark .chat-tool-result.err .chat-tool-result-text { color: #FF7369; }
   background: var(--window-bg);
   overflow: hidden;
 }
+/* 文件路径标题：头(首目录)+中(其余目录,可省略)+尾(文件名) 三段布局，
+   中部宽度不足时尾部省略(…)，保证首目录与文件名始终完整显示；够短时三段拼回即原路径 */
 .chat-change-file-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   padding: 7px 9px;
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 8.2pt;
   color: var(--secondary-text);
   background: var(--tag-bg);
-  word-break: break-all;
+  min-width: 0;
+  white-space: nowrap;
+}
+.chat-file-ico {
+  flex-shrink: 0;
+}
+
+/* 路径中段省略（修改面板与消息气泡共用）：头/尾不压缩，中部宽度不足时尾部省略(…)，
+   hover 由外层 title 显示完整路径，📋 按钮复制完整路径 */
+.path-ellipsis {
+  display: inline-flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.path-ellipsis .pe-head,
+.path-ellipsis .pe-tail {
+  flex-shrink: 0;
+}
+.path-ellipsis .pe-mid {
+  flex: 1 1 auto;
+  min-width: 1.4em; /* 被压缩时也保留一个省略号的位置 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.path-copy {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--subtle-text);
+  cursor: pointer;
+  font-size: 8pt;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.path-copy:hover {
+  background: var(--card-hover-bg);
+  color: var(--secondary-text);
+}
+
+/* 气泡内路径参数/路径行：容器变 flex 以支持中段省略 + 复制按钮 */
+.chat-tool-param.path-param,
+.chat-tool-row-main.path-param,
+.chat-tool-row-path.is-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+}
+.chat-tool-path.is-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  word-break: normal;
 }
 .chat-change-entry {
   padding: 8px;
@@ -2144,6 +2211,70 @@ body.dark .chat-tool-result.err .chat-tool-result-text { color: #FF7369; }
 }
 .chat-input:focus { border-color: var(--accent); }
 .chat-input::placeholder { color: var(--subtle-text); }
+
+/* 文件附件 chips 行（拖放/粘贴文件），位于输入框上方 */
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chat-attachments.hidden { display: none; }
+.chat-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 300px;
+  padding: 3px 6px 3px 9px;
+  font-size: 9.5pt;
+  color: var(--window-text);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 5px;
+  cursor: default;
+}
+.chat-attach-chip.static { padding-right: 9px; } /* 已发送气泡内的只读 chip（无 × 按钮） */
+.chat-attach-icon { flex-shrink: 0; line-height: 1; }
+.chat-attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attach-size { flex-shrink: 0; color: var(--subtle-text); font-size: 8.5pt; }
+.chat-attach-x {
+  flex-shrink: 0;
+  margin-left: 2px;
+  padding: 0 4px;
+  font: inherit;
+  font-size: 11pt;
+  line-height: 1;
+  color: var(--subtle-text);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.chat-attach-x:hover { color: var(--danger); background: var(--accent-soft); }
+/* 外部实例锁定时附件行一并置灰（与输入框/发送按钮同规则） */
+.chat-input-area.is-locked .chat-attachments {
+  opacity: 0.4;
+  pointer-events: none;
+}
+/* 已发送气泡内的附件 chips 换行容器 */
+.chat-attach-bubble {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+/* 拖拽文件悬停输入区：Wails runtime 自动切换 file-drop-target-active（data-file-drop-target 元素） */
+.chat-input-area.file-drop-target-active {
+  background: var(--accent-soft);
+}
+.chat-input-area.file-drop-target-active .chat-input {
+  border-color: var(--accent);
+  border-style: dashed;
+}
 
 /* 输入框下方的 context/tokens 信息条（与卡片同形式） */
 .chat-stats {

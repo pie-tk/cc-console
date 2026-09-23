@@ -617,6 +617,53 @@ func (s *MonitorService) OpenURL(url string) error {
 	return monitor.OpenInBrowser(url)
 }
 
+// OpenFolder 在系统文件管理器中打开指定目录（资源管理器 / Finder）。
+// 目录不存在或不是文件夹时返回错误，前端用 flashFoot 提示。
+func (s *MonitorService) OpenFolder(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("目录为空")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("目录不存在或不是文件夹: %s", path)
+	}
+	return monitor.OpenInFolder(path)
+}
+
+// ---- 输入框文件附件（拖放 / 粘贴 → chips → 发送时拼为路径文本） ----
+
+// GetClipboardFilePaths 读取剪贴板中的文件路径（资源管理器 Ctrl+C 复制的文件），
+// 供消息框“粘贴文件为附件”。无文件时返回空列表。
+func (s *MonitorService) GetClipboardFilePaths() ([]string, error) {
+	return monitor.ReadClipboardFilePaths()
+}
+
+// FileDesc 描述附件文件的显示信息（前端渲染 chip 用）。
+type FileDesc struct {
+	Path   string `json:"path"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	IsDir  bool   `json:"isDir"`
+	Exists bool   `json:"exists"`
+}
+
+// DescribeFiles 批量取附件文件的名称/大小/是否目录（os.Stat，跨平台）。
+// 单个文件 stat 失败不报错（返回 exists=false），前端按文件名兜底渲染。
+func (s *MonitorService) DescribeFiles(paths []string) []FileDesc {
+	out := make([]FileDesc, 0, len(paths))
+	for _, p := range paths {
+		d := FileDesc{Path: p, Name: filepath.Base(p)}
+		if st, err := os.Stat(p); err == nil {
+			d.Exists = true
+			d.IsDir = st.IsDir()
+			d.Size = st.Size()
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 // CheckUpdate 检查 GitHub 最新版本。
 // 返回 (info, nil) 表示有新版本可用；
 // 返回 (nil, nil) 表示已是最新；
