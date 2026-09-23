@@ -27,6 +27,13 @@
 | `internal/monitor/inject.go` | ConsoleInput 接口定义 |
 | `internal/monitor/inject_windows.go` | Win32 控制台输入注入实现 |
 | `internal/monitor/inject_darwin.go` | macOS 存根 |
+| `internal/monitor/folder.go` | OpenInFolder 跨平台（macOS open / Linux xdg-open） |
+| `internal/monitor/folder_windows.go` | Windows 资源管理器打开目录 |
+| `internal/monitor/clipboard_windows.go` | CF_HDROP 剪贴板文件路径读取（粘贴附件） |
+| `internal/monitor/clipboard_darwin.go` | macOS 剪贴板存根（粘贴附件暂不可用，拖放不受影响） |
+| `internal/monitor/update.go` | latest.json manifest 解析 + 平台 key（windows-x86_64 / darwin-arm64 / darwin-amd64） |
+| `internal/monitor/update_windows.go` | 下载安装包 + minisign 校验 + 静默自替换 |
+| `internal/monitor/update_darwin.go` | 下载 dmg + 打开挂载（macOS 手动拖拽安装） |
 | `internal/theme/palette.go` | Notion 风格调色板（light/dark）+ CSS 变量映射 |
 | `internal/theme/detect_windows.go` | Windows 注册表读取暗色模式 |
 | `internal/theme/anim.go` | 脉冲因子（Go 端状态） |
@@ -36,10 +43,12 @@
 | `frontend/bindings/` | Wails 自动生成的 JS 绑定 |
 | `icon.ico` | 应用图标（`//go:embed` 嵌入） |
 | `Taskfile.yml` | 构建任务 |
+| `build-mac.sh` | macOS universal DMG 打包（只能在 Mac 上运行） |
+| `build/darwin/Info.plist` | .app bundle 模板（`{{VERSION}}` 占位） |
 
 ## 构建
 
-**任何修改后都必须同时构建便携版 exe 和安装包**，确保两个产物都是最新的。若改动涉及更新逻辑或发布链路，还要一并验证发布元数据流程。
+**任何修改后都必须同时构建便携版 exe 和安装包**（Windows 端产物），确保两个产物都是最新的。若改动涉及更新逻辑或发布链路，还要一并验证发布元数据流程。macOS 产物在 Mac 上另行构建（见下）。
 
 ```bash
 # 一键本地构建（推荐）— 便携版 exe + 安装包
@@ -54,32 +63,63 @@
 task build
 task release-build
 
-# 分步手动执行（仅限你明确知道自己还需要补签名与 manifest 时）：
-# 1. cd frontend && npm run build && cd ..
-# 2. go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .
-# 3. go build -ldflags="-s -w" -o cc-console-sl.exe ./cmd/slhook && cp cmd/slhook/bridge.mjs bridge.mjs
-# 4. powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=$(grep 'const Version' service/monitor_service.go | sed 's/.*\"\(.*\)\".*/\1/') setup.iss"
-# 5. minisign -S -s cc-console.sec -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v<version>"
-# 6. 按 build.sh 的 jq 模板生成 latest.json
+# macOS 构建（必须在 Mac 上运行，Windows 不交叉编译 mac）
+./build-mac.sh            # 产出 bin/cc-console-setup-macos-universal.dmg（universal arm64+amd64）
+./build-mac.sh --release  # 额外生成 .minisig 与 latest.json（自动合并双平台条目）
 
 # CLI 模式（无 WebView，纯终端）
 go run . --list
 ```
 
+分步手动执行（仅限你明确知道自己还需要补签名与 manifest 时；正常情况一律走 `./build.sh`）：
+1. `cd frontend && npm run build && cd ..`
+2. `go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .`
+3. `go build -ldflags="-s -w" -o cc-console-sl.exe ./cmd/slhook && cp cmd/slhook/bridge.mjs bridge.mjs`
+4. `powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=<version> setup.iss"`
+5. `minisign -S -s cc-console.sec -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v<version>"`
+6. latest.json 按 build.sh 的 `write_manifest` 逻辑生成（含双平台合并，勿手拼）
+
 ## 发布
 
-每次发布前必须先执行 `./build.sh --release`（或 `task release-build`），确认 `cc-console-setup.exe`、`cc-console-setup.exe.minisig`、`latest.json` 都已生成，再上传到 GitHub Release。
+**双平台（Windows + macOS）同步发布**，规则对齐 toolbox 项目（E:\tools\toolbox）：
 
-**GitHub Release 上传必须使用命令行 `gh` CLI**：先 `git push origin <branch>` 推送提交，再用 `gh release create`/`gh release upload` 上传资产。不要为发布上传调用 `web-access`、CDP 或浏览器页面操作；除非用户明确要求网页登录/网页操作，发布链路一律走 `git` + `gh` 命令。
+- **改版本号前必查远程**（`./build.sh --release` / `./build-mac.sh --release` 内置守卫）：
+  - 线上同版本**缺本平台**条目（另一端先发、这端未发）→ **不升版本**，补建同版本产物即可；
+  - 线上同版本**已有本平台**条目 → 任何改动必须升版本（同版本产物永不覆盖）；
+  - 线上已有更新版本 → 先拉代码协调版本号。
+- **版本号单点同步**：`service/monitor_service.go` 的 `const Version`，两台机器构建前必须一致。
+- **latest.json 只收「同版本产物已就位」的平台条目**，谁后构建谁自动补齐另一平台条目
+  （脚本读线上 manifest 合并）。**严禁把旧版本的平台条目照抄进新版本 manifest**——
+  旧包 + 新版本号 → 该平台客户端无限更新循环。
+- **macOS 必须在 Mac 上构建**（`./build-mac.sh --release`，Windows 不交叉编译 mac）：
+  universal（arm64+amd64 lipo）DMG，产出 `bin/cc-console-setup-macos-universal.dmg` + `.minisig` + `latest.json`。
+- **macOS 产物必须带 ad-hoc 代码签名**（`codesign --force --deep --sign -`）：macOS Sequoia
+  的「本地网络」隐私控制会静默丢弃无签名进程的组播流量。build-mac.sh 已内置，勿去掉。
+- **签名私钥** `cc-console.sec` / 免密副本 `cc-console.local.sec`：Windows/Mac 两台机器各存一份，
+  两平台共用同一把（minisign 签名与文件名无关）。**丢失即永远无法发更新**。
+- **平台命名**：latest.json 的 platforms key（updater 按 `runtime.GOARCH` 查表）用
+  `windows-x86_64` / `darwin-arm64` / `darwin-amd64`——写错该平台永远收不到更新；
+  面向人的命名（Release 标题/说明/DMG 文件名）用 `macOS`。
+- 缺某平台条目时，该端客户端静默无更新（`CheckLatestRelease` 返回无更新），等另一台机器
+  构建 push 后自动补齐，**不要**为凑 manifest 照抄旧条目。
+
+每次发布前必须先执行 `./build.sh --release`（Windows）与 `./build-mac.sh --release`（macOS），
+确认产物与 `latest.json`（含全部已就位平台条目）都已生成，再上传到 GitHub Release。
+
+**GitHub Release 上传必须使用命令行 `gh` CLI**：先 `git push origin <branch>` 推送提交，再用 `gh release create`/`gh release upload` 上传资产。不要为发布上传调用 `web-access`、CDP 或浏览器页面操作；除非用户明确要求网页登录/网页操作，发布链路一律走 `git` + `gh` 命令。先发的平台创建 release 并传本平台资产；另一平台补发时用 `gh release upload` 追加资产并**更新** `latest.json`（双平台条目版）。
 
 ```bash
-gh release create v<version> ./cc-console-setup.exe ./latest.json ./cc-console-setup.exe.minisig --title "v<version>"
+# 先发（创建 release）
+gh release create v<version> ./cc-console-setup.exe ./cc-console-setup.exe.minisig ./latest.json --title "v<version>"
+
+# 补发（另一平台，如 macOS）：追加资产 + 覆盖 latest.json 为合并版
+gh release upload v<version> ./cc-console-setup-macos-universal.dmg ./cc-console-setup-macos-universal.dmg.minisig ./latest.json --clobber
 ```
 
 Release 资产：
-- `cc-console-setup.exe` — Inno Setup 安装包
-- `latest.json` — 更新检查读取的 manifest（必需）
-- `cc-console-setup.exe.minisig` — 对安装包的 minisign 签名（必需）
+- `cc-console-setup.exe` + `.minisig` — Windows Inno Setup 安装包及签名
+- `cc-console-setup-macos-universal.dmg` + `.minisig` — macOS universal DMG 及签名
+- `latest.json` — 更新检查读取的 manifest（必需，含全部已就位平台条目）
 
 注意：自动更新读取 `releases/latest/download/latest.json`，所以发布时务必使用**正式 release**，不要设为 prerelease。
 

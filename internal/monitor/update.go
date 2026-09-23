@@ -76,7 +76,10 @@ func CheckLatestRelease() (*ReleaseInfo, error) {
 	key := currentPlatformKey()
 	plat, ok := m.Platforms[key]
 	if !ok {
-		return nil, fmt.Errorf("manifest 缺少 %s 平台信息", key)
+		// 双平台发布纪律：latest.json 只收「同版本产物已就位」的平台条目，
+		// 缺本平台 = 该版本另一端先发、本端产物未就位（构建在对应平台的机器上做）。
+		// 此时静默视为无更新，不报错——待另一台机器补齐 manifest 后自然可查。
+		return nil, nil
 	}
 
 	return &ReleaseInfo{
@@ -100,8 +103,9 @@ func currentPlatformKey() string {
 	return runtime.GOOS + "-" + runtime.GOARCH
 }
 
-// darwinPlatformKey 生成 darwin 资产 key：darwin-arm64 / darwin-amd64。
-// universal 发布可用 darwin-universal（此时由调用方覆盖 GOARCH）。
+// darwinPlatformKey 生成 darwin 资产 key：darwin-arm64 / darwin-amd64（按 runtime.GOARCH）。
+// 实际发布的是 universal dmg（arm64+amd64 lipo），manifest 中两个 key 指向同一 URL，
+// 两种架构的客户端都能查到更新。
 func darwinPlatformKey(arch string) string {
 	return "darwin-" + arch
 }
