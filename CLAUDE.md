@@ -42,19 +42,21 @@
 | `frontend/src/main.js` | 刷新循环 + 卡片渲染 + 操作处理 |
 | `frontend/bindings/` | Wails 自动生成的 JS 绑定 |
 | `icon.ico` | 应用图标（`//go:embed` 嵌入） |
+| `bin/` | 编译中间产物（exe / bridge.mjs，gitignore，勿提交） |
 | `Taskfile.yml` | 构建任务 |
 | `build-mac.sh` | macOS universal DMG 打包（只能在 Mac 上运行） |
 | `build/darwin/Info.plist` | .app bundle 模板（`{{VERSION}}` 占位） |
 
 ## 构建
 
-**任何修改后都必须同时构建便携版 exe 和安装包**（Windows 端产物），确保两个产物都是最新的。若改动涉及更新逻辑或发布链路，还要一并验证发布元数据流程。macOS 产物在 Mac 上另行构建（见下）。
+**任何修改后都必须执行 `./build.sh`**（Windows 端）：产出安装包 `cc-console-setup.exe`（**唯一交付产物**）后**自动静默安装并启动**，直接对安装版测试。`bin/` 下的 exe / bridge.mjs 只是打包中间件（gitignore），便携版 exe 不再交付。若改动涉及更新逻辑或发布链路，还要一并验证发布元数据流程。macOS 产物在 Mac 上另行构建（见下）。
 
 ```bash
-# 一键本地构建（推荐）— 便携版 exe + 安装包
+# 一键本地构建（推荐）— 生成安装包 → 静默安装 → 启动测试
 ./build.sh
+./build.sh --no-install   # 只出安装包，不安装不启动
 
-# 发布前构建（强制生成 .minisig 与 latest.json）
+# 发布前构建（强制生成 .minisig 与 latest.json，默认不安装）
 ./build.sh --release
 # 若本机已准备 `cc-console.local.sec`（免密、仅本地保存的签名副本），脚本会优先使用它，
 # 这样 Claude 可直接完成发布而无需交互输入口令。
@@ -71,13 +73,14 @@ task release-build
 go run . --list
 ```
 
-分步手动执行（仅限你明确知道自己还需要补签名与 manifest 时；正常情况一律走 `./build.sh`）：
+分步手动执行（仅限你明确知道自己在做什么；正常情况一律走 `./build.sh`）：
 1. `cd frontend && npm run build && cd ..`
-2. `go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .`
-3. `go build -ldflags="-s -w" -o cc-console-sl.exe ./cmd/slhook && cp cmd/slhook/bridge.mjs bridge.mjs`
-4. `powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=<version> setup.iss"`
-5. `minisign -S -s cc-console.sec -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v<version>"`
-6. latest.json 按 build.sh 的 `write_manifest` 逻辑生成（含双平台合并，勿手拼）
+2. `$(go env GOPATH)/bin/rsrc -ico icon.ico -o rsrc_windows.syso`（仅链接期需要，编译后删除）
+3. `mkdir -p bin && go build -ldflags="-H windowsgui -s -w" -o bin/cc-console.exe .`
+4. `go build -ldflags="-s -w" -o bin/cc-console-sl.exe ./cmd/slhook && cp cmd/slhook/bridge.mjs bin/bridge.mjs`
+5. `powershell -Command "& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=<version> setup.iss"`
+6. （仅发布）`minisign -S -s cc-console.sec -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v<version>"`
+7. （仅发布）latest.json 按 build.sh 的 `write_manifest` 逻辑生成（含双平台合并，勿手拼）
 
 ## 发布
 
@@ -145,6 +148,7 @@ task dev
 
 ## 关键设计决策
 
+- **交付产物**: 唯一交付 `cc-console-setup.exe`；build.sh 构建后自动静默安装并启动，测试一律针对安装版（便携版 exe 已废弃，bin/ 下的 exe 仅作打包中间件）
 - **实例判定**: `claude.exe` 进程必须有对应 session 文件 + 启动时间匹配（容差 15s）
 - **输入注入**: Win32 `AttachConsole` + `WriteConsoleInput`，通过 `ConsoleInput` 接口隔离平台差异
 - **JSONL 缓存**: 按 mtime 缓存对话文件解析结果，避免每秒重读大文件

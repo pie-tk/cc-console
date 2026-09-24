@@ -49,9 +49,10 @@ en.LaunchApp=Launch {#MyAppName}
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Shortcuts}"
 
 [Files]
-Source: "cc-console.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "cc-console-sl.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "bridge.mjs"; DestDir: "{app}"; Flags: ignoreversion
+; 打包来源为 bin/ 编译中间产物（build.sh 第 3 步生成），根目录不再放 exe
+Source: "bin\cc-console.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "bin\cc-console-sl.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "bin\bridge.mjs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"

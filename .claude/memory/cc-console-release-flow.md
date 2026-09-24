@@ -12,15 +12,15 @@ metadata:
 **版本号唯一定义点**：`service/monitor_service.go` 的 `const Version`（约 121 行）。仓库里其他 version 字样（`frontend/package.json` 的 `0.0.0`、`Taskfile.yml` 的 `version: '3'`）都与应用版本无关，不要动。
 
 **完整发布流程**（GitHub: `pie-tk/cc-console`，SSH 走 [[github-ssh-over-443]] 的 443）：
-1. 改 `service/monitor_service.go` 的 `Version` 常量为新版本号
-2. `go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .`（前端先 `cd frontend && npm run build`）
+1. 改 `service/monitor_service.go` 的 `Version` 常量为新版本号（macOS 端两台机器必须一致）
+2. `./build.sh --release`（出 `cc-console-setup.exe` + `.minisig` + `latest.json`，内置线上版本守卫；便携版 exe 已废弃，见 [[build-install-test]]）
 3. git commit + push
 4. `git tag v1.2.0 && git push origin v1.2.0`
-5. `gh release create v1.2.0 cc-console.exe --title v1.2.0 --notes "..."`
-6. **验证**：启动 build 出的 exe，确认「关于」页版本号 == 目标版本。Version 是编译期常量烤进 exe，源码改了不重 build 不会变；且应用关窗只是隐藏到托盘 + 单实例，旧进程会一直显示旧版本号——必须从托盘菜单「退出」彻底杀掉旧实例再启动新的才生效。
+5. `gh release create v1.2.0 cc-console-setup.exe cc-console-setup.exe.minisig latest.json --title v1.2.0`（macOS 端稍后 `gh release upload` 追加 dmg + 覆盖 latest.json 为合并版）
+6. **验证**：安装 `cc-console-setup.exe` 启动后，确认「关于」页版本号 == 目标版本。Version 是编译期常量烤进 exe，源码改了不重 build 不会变；且应用关窗只是隐藏到托盘 + 单实例，旧进程会一直显示旧版本号——必须从托盘菜单「退出」彻底杀掉旧实例再启动新的才生效（build.sh 的静默安装内置 taskkill 会顶掉旧实例）。
 
-**覆盖/重传已有 release**（发布后发现 exe 版本号错了，不想改 tag/代码）：
-`gh release upload v1.1.0 cc-console.exe --clobber`  # --clobber 覆盖同名 asset，不动 tag 与 git
+**覆盖/重传已有 release**（发布后发现产物版本号错了，不想改 tag/代码）：
+`gh release upload v1.2.0 cc-console-setup.exe cc-console-setup.exe.minisig latest.json --clobber`  # --clobber 覆盖同名 asset，不动 tag 与 git
 
 **Why:** Version 是 Go 编译期常量，烤进 exe，改源码不重 build 不变。2026-06-11 v1.1.0 release 发布时 build 用了旧常量，exe 内部仍是 1.0.0，事后用 `gh release upload --clobber` 重传正确 exe 修复——靠记容易漏，所以固化此流程。
 **How to apply:** 用户说「发新版本 / release / 上传」时，按上面 6 步走，第 1 步（改常量）和第 6 步（验证实际版本）最容易漏，优先确认。

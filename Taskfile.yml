@@ -10,7 +10,7 @@ vars:
 
 tasks:
   build:
-    summary: Builds the application, installer, and updater artifacts
+    summary: Builds the installer, then installs and launches it for testing
     cmds:
       - bash ./build.sh
 
@@ -35,6 +35,6 @@ tasks:
       - go run github.com/wailsapp/wails/v3/cmd/wails3@latest generate bindings
 
   cli:
-    summary: Build CLI-only version (no GUI)
+    summary: Build CLI-only version (no GUI, output to bin/)
     cmds:
-      - go build -ldflags="-s -w" -o {{.APP_NAME}}-cli.exe .
+      - go build -ldflags="-s -w" -o bin/{{.APP_NAME}}-cli.exe .

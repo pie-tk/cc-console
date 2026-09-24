@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# build.sh — 一键构建 cc-console（便携版 exe + Inno Setup 安装包）
+# build.sh — 构建 cc-console 安装包（唯一交付产物），构建后自动安装并启动测试
 # 用法:
-#   ./build.sh           # 本地构建，可跳过更新发布元数据
-#   ./build.sh --release # 发布构建，强制生成 .minisig 与 latest.json
+#   ./build.sh                # 构建安装包 → 静默安装 → 启动测试
+#   ./build.sh --no-install   # 只构建安装包，不安装不启动
+#   ./build.sh --release      # 发布构建：强制生成 .minisig 与 latest.json（默认不安装）
+#   ./build.sh --release --install  # 发布构建并安装测试
+#
+# 交付产物只有 cc-console-setup.exe。cc-console.exe / cc-console-sl.exe / bridge.mjs
+# 只是打包中间件，统一编译到 bin/（gitignore），不对外分发、不留在根目录。
 #
 # 双平台发布纪律（macOS 在 Mac 上跑 ./build-mac.sh --release，规则相同）：
 #   - latest.json 只收「同版本产物已就位」的平台条目，谁后构建谁把 manifest 补成双平台；
@@ -15,13 +20,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 RELEASE_MODE=0
-if [ "${1:-}" = "--release" ]; then
-  RELEASE_MODE=1
-elif [ -n "${1:-}" ]; then
-  echo "未知参数: $1" >&2
-  echo "用法: ./build.sh [--release]" >&2
-  exit 1
-fi
+DO_INSTALL=1
+for arg in "$@"; do
+  case "$arg" in
+    --release)    RELEASE_MODE=1; DO_INSTALL=0 ;;
+    --install)    DO_INSTALL=1 ;;
+    --no-install) DO_INSTALL=0 ;;
+    *)
+      echo "未知参数: $arg" >&2
+      echo "用法: ./build.sh [--release] [--install|--no-install]" >&2
+      exit 1 ;;
+  esac
+done
 
 # 清除 GOROOT 让 go 自动检测（环境变量中带引号的 GOROOT 会导致 go 找不到目录）
 unset GOROOT
@@ -30,28 +40,27 @@ VERSION=$(grep 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/
 MINISIGN_KEY="cc-console.sec"
 MINISIGN_KEY_LOCAL="cc-console.local.sec"
 
-echo "=== 1/7 前端构建 ==="
+echo "=== 1/6 前端构建 ==="
 cd frontend && npm run build && cd ..
 
 echo ""
-echo "=== 2/7 嵌入 Windows 图标资源 ==="
+echo "=== 2/6 嵌入 Windows 图标资源 ==="
 # rsrc 用于将 ICO 嵌入 Windows PE 资源（桌面/任务栏图标）
 # 输出文件名带 _windows 后缀，使 Go 仅在 GOOS=windows 链接该 .syso；
-# 否则无后缀的 rsrc.syso（COFF）会被 darwin/linux 链接，导致 ld 报 "unknown file type"。
+# 仅链接期需要，编译完成后立即删除，保持根目录干净。
+mkdir -p bin
 RSRC="$(go env GOPATH | tr -d '"')/bin/rsrc"
 "$RSRC" -ico icon.ico -o rsrc_windows.syso
 
 echo ""
-echo "=== 3/7 Go 编译便携版 ==="
-go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .
+echo "=== 3/6 编译（中间产物到 bin/） ==="
+go build -ldflags="-H windowsgui -s -w" -o bin/cc-console.exe .
+go build -ldflags="-s -w" -o bin/cc-console-sl.exe ./cmd/slhook
+cp cmd/slhook/bridge.mjs bin/bridge.mjs
+rm -f rsrc_windows.syso
 
 echo ""
-echo "=== 4/7 编译 statusline 桥接 helper ==="
-go build -ldflags="-s -w" -o cc-console-sl.exe ./cmd/slhook
-cp cmd/slhook/bridge.mjs bridge.mjs
-
-echo ""
-echo "=== 5/7 生成 Inno Setup 安装包 ==="
+echo "=== 4/6 生成 Inno Setup 安装包 ==="
 echo "Version: $VERSION"
 # 自动发现 ISCC：优先系统级安装，回退到用户级安装
 ISCC_EXE=""
@@ -67,7 +76,7 @@ echo "ISCC: $ISCC_EXE"
 powershell -Command "& '$(cygpath -w "$ISCC_EXE")' /DMyAppVersion=$VERSION setup.iss"
 
 echo ""
-echo "=== 6/7 处理更新发布元数据 ==="
+echo "=== 5/6 处理更新发布元数据 ==="
 # release notes：取上一个版本 tag 到 HEAD 的提交标题（多 commit 按行展开），
 # 这是关于页「检查更新」要展示的具体更新内容；仓库尚无历史 tag 时退回 HEAD 单条，
 # 仍取不到时退回旧占位串。通过 jq --arg 传入，避免特殊字符破坏 JSON。
@@ -108,28 +117,26 @@ write_manifest() {
   LOCAL_PLATFORMS="$1"
   EXTRA_PLATFORMS="{}"
 
-  if [ "$RELEASE_MODE" -eq 1 ]; then
-    REMOTE_JSON="$(fetch_manifest)"
-    if [ -n "$REMOTE_JSON" ] && REMOTE_OK="$(jq -r '.version // empty' <<<"$REMOTE_JSON" 2>/dev/null)" && [ -n "${REMOTE_OK:-}" ]; then
-      REMOTE_VER="$REMOTE_OK"
-      echo "线上 manifest 版本：v$REMOTE_VER（本地 v$VERSION）"
-      if [ "$REMOTE_VER" = "$VERSION" ]; then
-        if [ "$(jq -r --arg k windows-x86_64 '.platforms[$k] != null' <<<"$REMOTE_JSON")" = "true" ]; then
-          echo "✗ 线上 v$VERSION 已含 windows-x86_64 条目：同版本同平台产物永不覆盖，请升版本号（macOS 端同步升）" >&2
-          exit 1
-        fi
-        EXTRA_PLATFORMS="$(jq -r '.platforms // {} | del(.["windows-x86_64"])' <<<"$REMOTE_JSON")"
-        echo "补齐模式：合并线上同版本平台条目 $(jq -r 'keys | join(", ")' <<<"$EXTRA_PLATFORMS")"
-      else
-        MAX_VER="$(printf '%s\n%s\n' "$REMOTE_VER" "$VERSION" | sort -V | tail -1)"
-        if [ "$MAX_VER" = "$REMOTE_VER" ]; then
-          echo "✗ 线上已有更新版本 v$REMOTE_VER（本地 v$VERSION）：请先拉代码协调版本号" >&2
-          exit 1
-        fi
+  REMOTE_JSON="$(fetch_manifest)"
+  if [ -n "$REMOTE_JSON" ] && REMOTE_OK="$(jq -r '.version // empty' <<<"$REMOTE_JSON" 2>/dev/null)" && [ -n "${REMOTE_OK:-}" ]; then
+    REMOTE_VER="$REMOTE_OK"
+    echo "线上 manifest 版本：v$REMOTE_VER（本地 v$VERSION）"
+    if [ "$REMOTE_VER" = "$VERSION" ]; then
+      if [ "$(jq -r --arg k windows-x86_64 '.platforms[$k] != null' <<<"$REMOTE_JSON")" = "true" ]; then
+        echo "✗ 线上 v$VERSION 已含 windows-x86_64 条目：同版本同平台产物永不覆盖，请升版本号（macOS 端同步升）" >&2
+        exit 1
       fi
+      EXTRA_PLATFORMS="$(jq -r '.platforms // {} | del(.["windows-x86_64"])' <<<"$REMOTE_JSON")"
+      echo "补齐模式：合并线上同版本平台条目 $(jq -r 'keys | join(", ")' <<<"$EXTRA_PLATFORMS")"
     else
-      echo "⚠️  无法获取线上 manifest（网络不可达或尚无 release）：按全新 manifest 生成"
+      MAX_VER="$(printf '%s\n%s\n' "$REMOTE_VER" "$VERSION" | sort -V | tail -1)"
+      if [ "$MAX_VER" = "$REMOTE_VER" ]; then
+        echo "✗ 线上已有更新版本 v$REMOTE_VER（本地 v$VERSION）：请先拉代码协调版本号" >&2
+        exit 1
+      fi
     fi
+  else
+    echo "⚠️  无法获取线上 manifest（网络不可达或尚无 release）：按全新 manifest 生成"
   fi
 
   # manifest 内嵌两行主签名（untrusted comment + 文件签名），兼容已发布客户端；
@@ -151,32 +158,29 @@ write_manifest() {
   echo "已生成 latest.json（平台：$(jq -r '.platforms | keys | join(", ")' latest.json)）"
 }
 
-if ! command -v minisign >/dev/null 2>&1; then
-  if [ "$RELEASE_MODE" -eq 1 ]; then
+if [ "$RELEASE_MODE" -eq 1 ]; then
+  # 签名与 manifest 只属于发布构建；本地构建不生成，避免弄脏工作区
+  # 或误把只有单平台条目的 latest.json 传上去。
+  if ! command -v minisign >/dev/null 2>&1; then
     echo "缺少 minisign：发布构建必须先安装（示例: scoop install minisign）" >&2
     exit 1
   fi
-  echo "⚠️  未安装 minisign，跳过签名与 manifest（本地构建允许；发布请用 ./build.sh --release）"
-elif ! command -v jq >/dev/null 2>&1; then
-  if [ "$RELEASE_MODE" -eq 1 ]; then
+  if ! command -v jq >/dev/null 2>&1; then
     echo "缺少 jq：发布构建必须先安装（示例: scoop install jq）" >&2
     exit 1
   fi
-  echo "⚠️  未安装 jq，跳过签名与 manifest（本地构建允许；发布请用 ./build.sh --release）"
-elif [ -f "$MINISIGN_KEY_LOCAL" ] || { [ -f "$MINISIGN_KEY" ] && [ "$RELEASE_MODE" -eq 1 ]; }; then
   if [ -f "$MINISIGN_KEY_LOCAL" ]; then
     echo "使用免密本地签名副本 $MINISIGN_KEY_LOCAL"
     minisign -S -s "$MINISIGN_KEY_LOCAL" -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v$VERSION"
-  else
+  elif [ -f "$MINISIGN_KEY" ]; then
     echo "使用加密私钥 $MINISIGN_KEY 签名（将提示输入口令）"
     minisign -S -s "$MINISIGN_KEY" -m cc-console-setup.exe -x cc-console-setup.exe.minisig -t "cc-console v$VERSION"
+  else
+    echo "✗ 未找到签名私钥 $MINISIGN_KEY / $MINISIGN_KEY_LOCAL：发布构建必须签名" >&2
+    exit 1
   fi
   echo "已生成 cc-console-setup.exe.minisig"
 
-  echo ""
-  echo "=== 7/7 生成 latest.json manifest ==="
-  # 用 shell 而非 python：Windows 上 python 常被 Store「应用执行别名」拦截，
-  # 导致 build.sh --release 在签名后静默卡死、latest.json 不生成。
   LOCAL_PLATFORMS="$(jq -n \
     --arg ver "$VERSION" \
     --arg sig "$(head -2 cc-console-setup.exe.minisig | tr -d '\r')" \
@@ -186,17 +190,37 @@ elif [ -f "$MINISIGN_KEY_LOCAL" ] || { [ -f "$MINISIGN_KEY" ] && [ "$RELEASE_MOD
        } }')"
   write_manifest "$LOCAL_PLATFORMS"
 else
-  echo "⚠️  检测到仅有加密私钥 $MINISIGN_KEY，本地构建跳过签名与 manifest"
-  echo "    若要免交互发布，请先创建免密副本 $MINISIGN_KEY_LOCAL"
+  echo "本地构建跳过签名与 manifest（发布请用 ./build.sh --release）"
+fi
+
+echo ""
+if [ "$DO_INSTALL" -eq 1 ]; then
+  echo "=== 6/6 安装并打开测试 ==="
+  # 静默安装（升级安装内置 taskkill，会顶掉旧实例）；/MERGETASKS=!desktopicon
+  # 保留默认任务但不创建桌面快捷方式，避免反复构建弄脏桌面。
+  # 注意：直接同步执行、输出丢给 /dev/null——不要用 powershell Start-Process -Wait
+  # （实测挂死不返回），也不要给 GUI 子进程留 stdout 管道句柄（会卡住上层输出收集）。
+  if ! "$SCRIPT_DIR/cc-console-setup.exe" /SILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS=!desktopicon >/dev/null 2>&1; then
+    echo "✗ 安装失败" >&2
+    exit 1
+  fi
+
+  # 安装目录以注册表为准（Inno 记住上次安装位置，可能不是默认的 %LOCALAPPDATA%）
+  INSTALL_DIR="$(powershell -NoProfile -Command "(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*_is1' | Where-Object { \$_.DisplayName -like 'CC Console*' } | Select-Object -First 1).InstallLocation" 2>/dev/null | tr -d '\r' || true)"
+  INSTALL_DIR="${INSTALL_DIR:-$LOCALAPPDATA/cc-console}"
+  echo "已静默安装到 $INSTALL_DIR，正在启动…"
+  cmd //c start "" "$(cygpath -w "$INSTALL_DIR/cc-console.exe")" >/dev/null 2>&1
+else
+  echo "=== 6/6 跳过安装（$([ "$RELEASE_MODE" -eq 1 ] && echo '--release 默认不安装，可加 --install' || echo '--no-install')） ==="
 fi
 
 echo ""
 echo "=== 完成 ==="
-ls -lh cc-console.exe cc-console-sl.exe cc-console-setup.exe
-if [ -f cc-console-setup.exe.minisig ] && [ -f latest.json ]; then
+ls -lh cc-console-setup.exe
+if [ "$RELEASE_MODE" -eq 1 ]; then
   echo ""
   echo "发布产物：cc-console-setup.exe / cc-console-setup.exe.minisig / latest.json"
 else
   echo ""
-  echo "本次未生成发布元数据；正式发布前请执行 ./build.sh --release"
+  echo "交付产物：cc-console-setup.exe（本地构建不生成签名/manifest；正式发布前执行 ./build.sh --release）"
 fi

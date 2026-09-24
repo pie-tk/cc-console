@@ -131,19 +131,15 @@ Claude Code 在终端里需要按键选择的场景，这里全部做成**按钮
 
 ## 安装
 
-### 安装包（推荐）
-
-从 [GitHub Releases](https://github.com/pie-tk/cc-console/releases) 下载 `cc-console-setup.exe`，双击安装。支持中文（简体/繁体），自动创建桌面快捷方式。
-
-### 便携版
-
-从 [Releases](https://github.com/pie-tk/cc-console/releases) 下载 `cc-console.exe`，直接运行。
+从 [GitHub Releases](https://github.com/pie-tk/cc-console/releases) 下载 `cc-console-setup.exe`，双击安装（默认装到 `%LOCALAPPDATA%\cc-console`）。支持中文（简体/繁体），可选创建桌面快捷方式。
 
 > 环境要求：**Windows 10/11**（WebView2 系统自带）+ **Claude Code CLI** 已安装
 
 ---
 
 ## 使用
+
+安装后从开始菜单「CC Console」启动（程序位于 `%LOCALAPPDATA%\cc-console\cc-console.exe`）：
 
 ```bash
 # GUI 模式（托盘常驻，每秒刷新）
@@ -188,12 +184,12 @@ GUI 设置面板（⚙）可配置：关闭按钮行为、新建实例终端模�
 git clone git@github.com:pie-tk/cc-console.git
 cd cc-console
 
-# 一键构建（exe + 安装包）
+# 一键构建（生成安装包 → 静默安装 → 启动测试）
 ./build.sh
 
-# 或分步：
+# 或分步（exe 是打包中间件进 bin/，最终产物只有安装包）：
 cd frontend && npm install && npm run build && cd ..
-go build -ldflags="-H windowsgui -s -w" -o cc-console.exe .
+go build -ldflags="-H windowsgui -s -w" -o bin/cc-console.exe .
 ```
 
 > 依赖 Go 1.26+、Node.js。国内网络设 `go env -w GOPROXY=https://goproxy.cn,direct`
