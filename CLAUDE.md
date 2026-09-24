@@ -66,7 +66,7 @@ task build
 task release-build
 
 # macOS 构建（必须在 Mac 上运行，Windows 不交叉编译 mac）
-./build-mac.sh            # 产出 bin/cc-console-setup-macos-universal.dmg（universal arm64+amd64）
+./build-mac.sh            # 产出 bin/cc-console_<版本>_macOS.dmg（universal arm64+amd64）
 ./build-mac.sh --release  # 额外生成 .minisig 与 latest.json（自动合并双平台条目）
 
 # CLI 模式（无 WebView，纯终端）
@@ -95,7 +95,7 @@ go run . --list
   （脚本读线上 manifest 合并）。**严禁把旧版本的平台条目照抄进新版本 manifest**——
   旧包 + 新版本号 → 该平台客户端无限更新循环。
 - **macOS 必须在 Mac 上构建**（`./build-mac.sh --release`，Windows 不交叉编译 mac）：
-  universal（arm64+amd64 lipo）DMG，产出 `bin/cc-console-setup-macos-universal.dmg` + `.minisig` + `latest.json`。
+  universal（arm64+amd64 lipo）DMG，产出 `bin/cc-console_<版本>_macOS.dmg`（命名对齐 toolbox：产品名_版本_macOS.dmg，版本与 Windows 端对应）+ `.minisig` + `latest.json`。
 - **macOS 产物必须带 ad-hoc 代码签名**（`codesign --force --deep --sign -`）：macOS Sequoia
   的「本地网络」隐私控制会静默丢弃无签名进程的组播流量。build-mac.sh 已内置，勿去掉。
 - **签名私钥** `cc-console.sec` / 免密副本 `cc-console.local.sec`：Windows/Mac 两台机器各存一份，
@@ -116,12 +116,12 @@ go run . --list
 gh release create v<version> ./cc-console-setup.exe ./cc-console-setup.exe.minisig ./latest.json --title "v<version>"
 
 # 补发（另一平台，如 macOS）：追加资产 + 覆盖 latest.json 为合并版
-gh release upload v<version> ./cc-console-setup-macos-universal.dmg ./cc-console-setup-macos-universal.dmg.minisig ./latest.json --clobber
+gh release upload v<version> ./cc-console_<version>_macOS.dmg ./cc-console_<version>_macOS.dmg.minisig ./latest.json --clobber
 ```
 
 Release 资产：
 - `cc-console-setup.exe` + `.minisig` — Windows Inno Setup 安装包及签名
-- `cc-console-setup-macos-universal.dmg` + `.minisig` — macOS universal DMG 及签名
+- `cc-console_<version>_macOS.dmg` + `.minisig` — macOS universal DMG 及签名（命名对齐 toolbox）
 - `latest.json` — 更新检查读取的 manifest（必需，含全部已就位平台条目）
 
 注意：自动更新读取 `releases/latest/download/latest.json`，所以发布时务必使用**正式 release**，不要设为 prerelease。

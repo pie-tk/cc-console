@@ -4,7 +4,7 @@
 #   ./build-mac.sh           # 本地构建，只出 DMG
 #   ./build-mac.sh --release # 发布构建：额外生成 .minisig 与 latest.json（含双平台合并）
 #
-# 产出：bin/cc-console-setup-macos-universal.dmg（--release 时另生成 .minisig 与根目录 latest.json）
+# 产出：bin/cc-console_<版本>_macOS.dmg（--release 时另生成 .minisig 与根目录 latest.json）
 #   - universal（arm64 + amd64 via lipo）
 #   - .app bundle（含 cc-console / cc-console-sl / bridge.mjs / icons.icns / Info.plist）
 #   - ad-hoc 签名（codesign --force --deep --sign -）
@@ -45,9 +45,9 @@ VER=$(grep -m1 'const Version' service/monitor_service.go | sed 's/.*"\(.*\)".*/
 [ -n "$VER" ] || { echo "无法解析版本号"; exit 1; }
 APP_NAME="cc-console"
 APP="bin/${APP_NAME}.app"
-# 发布资产名固定不带版本（GitHub Release 每个版本独立命名空间，URL 指向固定名；
-# 同 setup.exe 的 cc-console-setup 前缀 + 面向人的 macos 标识，updater key 另用 darwin-*）
-DMG="bin/cc-console-setup-macos-universal.dmg"
+# 发布资产名对齐 toolbox 惯例：产品名_版本_macOS.dmg（命名含 macOS 标识与版本号，
+# 版本号与 Windows 端对应；updater key 另用 darwin-*，由 latest.json 的 url 指向本资产）
+DMG="bin/cc-console_${VER}_macOS.dmg"
 STAGE="bin/stage"
 
 echo "==> [1/7] 前端构建（npm ci 宽容回退）"
@@ -178,7 +178,7 @@ const { VER: ver, SIG: sig, NOTES: notes, REMOTE: remote } = process.env;
 const fs = require("fs");
 const entry = {
   signature: sig,
-  url: `https://github.com/pie-tk/cc-console/releases/download/v${ver}/cc-console-setup-macos-universal.dmg`,
+  url: `https://github.com/pie-tk/cc-console/releases/download/v${ver}/cc-console_${ver}_macOS.dmg`,
 };
 const localPlatforms = { "darwin-arm64": entry, "darwin-amd64": entry };
 let extra = {};
