@@ -41,8 +41,9 @@ type convDetails struct {
 }
 
 type convCacheEntry struct {
-	mtime   int64
-	details convDetails
+	mtime    int64
+	parsedAt time.Time
+	details  convDetails
 }
 
 var convCache = map[string]convCacheEntry{}
@@ -136,8 +137,15 @@ func loadConversationDetails(s *SessionInfo) convDetails {
 	cacheMu.RLock()
 	c, ok := convCache[path]
 	cacheMu.RUnlock()
-	if ok && c.mtime == mtime {
-		return c.details
+	if ok {
+		// mtime 未变 → 命中缓存；mtime 变了（活跃会话每秒追加）也只按最小 2s 间隔重解析，
+		// 避免每秒全量重读 + 双解析把 CPU 打满（卡片模型/用量/主题允许 ≤2s 陈旧）。
+		if c.mtime == mtime {
+			return c.details
+		}
+		if time.Since(c.parsedAt) < 2*time.Second {
+			return c.details
+		}
 	}
 
 	data, err := os.ReadFile(path)
@@ -150,7 +158,7 @@ func loadConversationDetails(s *SessionInfo) convDetails {
 	d.waitingKind = DetectPendingInteraction(hist.Messages, s.Status)
 
 	cacheMu.Lock()
-	convCache[path] = convCacheEntry{mtime: mtime, details: d}
+	convCache[path] = convCacheEntry{mtime: mtime, parsedAt: time.Now(), details: d}
 	cacheMu.Unlock()
 	return d
 }
@@ -342,8 +350,9 @@ func cleanConvCache() {
 // ---- 聊天面板：完整消息历史解析 ----
 
 type chatHistoryCacheEntry struct {
-	mtime  int64
-	result ChatHistoryResult
+	mtime    int64
+	parsedAt time.Time
+	result   ChatHistoryResult
 }
 
 var chatHistoryCache = map[string]chatHistoryCacheEntry{}
@@ -365,8 +374,14 @@ func GetChatHistory(s *SessionInfo) ChatHistoryResult {
 	cacheMu.RLock()
 	c, ok := chatHistoryCache[path]
 	cacheMu.RUnlock()
-	if ok && c.mtime == mtime {
-		return c.result
+	if ok {
+		// 同 loadConversationDetails：mtime 必变的活跃会话按最小 2s 间隔重解析
+		if c.mtime == mtime {
+			return c.result
+		}
+		if time.Since(c.parsedAt) < 2*time.Second {
+			return c.result
+		}
 	}
 
 	data, err := os.ReadFile(path)
@@ -377,7 +392,7 @@ func GetChatHistory(s *SessionInfo) ChatHistoryResult {
 
 	// 缓存写入
 	cacheMu.Lock()
-	chatHistoryCache[path] = chatHistoryCacheEntry{mtime: mtime, result: result}
+	chatHistoryCache[path] = chatHistoryCacheEntry{mtime: mtime, parsedAt: time.Now(), result: result}
 	cacheMu.Unlock()
 	return result
 }

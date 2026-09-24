@@ -122,7 +122,7 @@ hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format UDZO "$DMG"
 
 if [ "$RELEASE_MODE" -eq 0 ]; then
   echo ""
-  echo "完成：$DMG（本地构建；发布请用 ./build-mac.sh --release）"
+  echo "完成：${DMG}（本地构建；发布请用 ./build-mac.sh --release）"
   echo "--- lipo -info ---"
   lipo -info "$APP/Contents/MacOS/cc-console"
   echo "--- codesign verify ---"

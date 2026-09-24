@@ -92,7 +92,32 @@ const hookFreshMs int64 = 120000
 // ~/.cc-console/live/<pid>.json。本函数以 claude.exe 进程为锚点枚举 pid → 读对应 live
 // 文件精确还原(model/context/busy)。无新鲜 live 文件时回退到旧的 cwd+mtime 猜测(读 jsonl,
 // 在 regression 修复或会话结束后生效),前端标注"未接入"。
+// Detect 返回当前实例列表（带 1s 结果缓存）。
+// 前端每 1s 轮询、托盘 tooltip 每 2s 轮询共享同一份缓存，
+// 避免同秒内重复跑进程枚举 + ps/lsof/pgrep 子进程 + 会话/对话解析。
 func Detect() (live []Instance, stale []Instance, err error) {
+	detectMu.Lock()
+	defer detectMu.Unlock()
+	if detectHasCache && time.Since(detectAt) < time.Second {
+		return detectLive, detectStale, detectErr
+	}
+	live, stale, err = detectNow()
+	detectLive, detectStale, detectErr = live, stale, err
+	detectAt, detectHasCache = time.Now(), true
+	return live, stale, err
+}
+
+var (
+	detectMu      sync.Mutex
+	detectAt      time.Time
+	detectHasCache bool
+	detectLive    []Instance
+	detectStale   []Instance
+	detectErr     error
+)
+
+// detectNow 执行一次完整探测（进程枚举 + 会话匹配 + 对话解析）。
+func detectNow() (live []Instance, stale []Instance, err error) {
 	now := time.Now().UnixMilli()
 
 	procs := enumerateClaude()

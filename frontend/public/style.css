@@ -195,6 +195,21 @@ body {
   border-left-color: var(--session-wait-color);
   background: color-mix(in srgb, var(--session-wait-color) 10%, var(--window-bg));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--session-wait-color) 22%, transparent), 0 0 0 rgba(0,0,0,0);
+  /* z-index:0 建立堆叠上下文，让 ::before(z-index:-1) 的呼吸光晕垫在内容之下 */
+  position: relative;
+  z-index: 0;
+}
+/* 呼吸光晕改走 ::before 叠层 + 纯 opacity 动画（合成器执行），
+   不再逐帧动画 background/box-shadow 触发整标签重绘 + 图层提交（CPU 大户） */
+.session-tab.waiting::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--session-wait-color);
+  opacity: 0.05;
+  pointer-events: none;
+  z-index: -1;
   animation: session-waiting-breathe 1.8s ease-in-out infinite;
 }
 .session-tab.waiting:hover {
@@ -217,14 +232,8 @@ body {
   border: 1px solid color-mix(in srgb, var(--session-wait-color, var(--warning)) 34%, transparent);
 }
 @keyframes session-waiting-breathe {
-  0%, 100% {
-    background: color-mix(in srgb, var(--session-wait-color) 10%, var(--window-bg));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--session-wait-color) 22%, transparent), 0 0 0 rgba(0,0,0,0);
-  }
-  50% {
-    background: color-mix(in srgb, var(--session-wait-color) 22%, var(--window-bg));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--session-wait-color) 52%, transparent), 0 0 16px color-mix(in srgb, var(--session-wait-color) 28%, transparent);
-  }
+  0%, 100% { opacity: 0.04; }
+  50%      { opacity: 0.18; }
 }
 .session-tab-dot {
   width: 7px;
@@ -237,6 +246,8 @@ body {
 }
 .session-tab-dot.busy {
   background: var(--status-busy);
+  /* 光晕改为静态（原逐帧动画 box-shadow 会触发持续重绘）；仅 transform 参与动画（合成器执行） */
+  box-shadow: 0 0 6px color-mix(in srgb, var(--status-busy) 48%, transparent);
   animation: session-busy-shuttle 0.9s ease-in-out infinite alternate;
 }
 .session-tab-dot.idle {
@@ -245,14 +256,8 @@ body {
   box-shadow: none;
 }
 @keyframes session-busy-shuttle {
-  from {
-    transform: translateX(-2px);
-    box-shadow: 0 0 5px color-mix(in srgb, var(--status-busy) 42%, transparent);
-  }
-  to {
-    transform: translateX(2px);
-    box-shadow: 0 0 8px color-mix(in srgb, var(--status-busy) 55%, transparent);
-  }
+  from { transform: translateX(-2px); }
+  to   { transform: translateX(2px); }
 }
 .session-tab-info {
   display: flex;

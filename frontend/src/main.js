@@ -627,9 +627,9 @@ async function refresh() {
       }
     }
 
-    // 聊天面板打开时同步刷新消息 + 底部 context/tokens 信息条
+    // 聊天面板打开时刷新底部 context/tokens 信息条；消息流由独立的 2s 定时器刷新
+    // （原先主循环 1s + 定时器 2s 双份全量拉取解析，活跃会话下 CPU 开销翻倍，故去掉主循环这份）
     if (chatPanelPid !== null) {
-      refreshChatMessages(chatPanelPid);
       renderChatStats(chatPanelPid);
       updateChatInputLockState(); // 内置/外部状态可能变化（首次 ListTerminals 到达后需刷新锁态）
     }
